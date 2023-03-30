@@ -4,10 +4,10 @@ import math
 import os
 import pickle
 import random
-import pathlib
 import nuke
 import nuke.rotopaint as rp
 import numpy as np
+
 
 def createRotoNode():
     """create a roto node"""
@@ -29,7 +29,9 @@ class point2D:
 
 
 class nShapeMaster:
-    def __init__(self):
+    def __init__(self, nPoints=None, rotoNode=None):
+        self.nPoints = nPoints
+        self.shape = None
         self.ctrlPoints = []
         self.points = []
         self.nPoints = None
@@ -54,9 +56,16 @@ class nShapeMaster:
             self.addPoint( point[0], point[1])
 
     def printPoint(self,point, time):
-        print(
+
+        if type(point) == rp.ShapeControlPoint:
+            print(
             "center:{} leftTanget: {} rightTangent: {} featherCentre: {} featherleftTangent: {} featherRightTangent: {}".format(point.center.getPosition(time), point.leftTangent.getPosition(time),
                                                                point.rightTangent.getPosition(time) , point.featherCenter.getPosition(time), point.featherLeftTangent.getPosition(time), point.featherRightTangent.getPosition(time)))
+        #if numpy array
+        elif type(point) == np.ndarray:
+            print("center:{}".format(point[1]))
+            print("leftTangent:{}".format(point[0]))
+            print("rightTangent:{}".format(point[2]))
 
     def getPointDict(self,point,time):
         """get a dictionary of a point at a position in time  points"""
@@ -154,6 +163,7 @@ class nShapeMaster:
         """grow the tangent of all points"""
         for point in range(len(self.shape)):
             self.growPointTangent(time,point,amount)
+        self.getListofCtrlPoints()
 
     def randomisePointTangent(self,time,pointIndex,xRange,yRange):
         """randomise the tangent of a single point"""
@@ -181,6 +191,19 @@ class nShapeMaster:
         """randomise all points"""
         for point in range(len(self.shape)):
             self.randomisePoint(point,time,xRange,yRange)
+
+    def getListofCtrlPoints(self):
+        """return a list of control points from the nukeShape"""
+        print("getting list of control points")
+        self.npCtrlPoints=[]
+        for i in range(self.nPoints):
+            #convert point into an numpy array (lefttangent, center, righttangent)
+            npPoint=np.array([self.shape[i].leftTangent.getPosition(1),self.shape[i].center.getPosition(1),self.shape[i].rightTangent.getPosition(1)])
+            npPoint=npPoint[:,:2]
+            self.npCtrlPoints.append(npPoint)
+
+
+
 
 class shapeLoader(nShapeMaster):
     """load shapes from pickle file into a roto node"""
@@ -301,9 +324,65 @@ class shapeLoader(nShapeMaster):
         self.readNode['origfirst'].setValue(1)
         self.readNode['origlast'].setValue(1)
 
+    def splitCurveNuke(self,curve, t):
+        """given the control points of a bezier curve in list format [p0,p1,p2,p3]split it at t, retyrn the control points at the split"""
+        # extract the first 2 values from 'center' and 'rightTangent' and convert to list
+        p0centre = curve[0]
+        p0left = curve[1]
+        p0centre = np.array(p0centre).astype(np.float32)
+        p0left = np.array(p0left).astype(np.float32)
+        p0left = p0centre - p0left
+        # now get hafway points betwen centre and tangent control points
+        p0a = p0centre + (p0left - p0centre) * t
+        # now do the same for p1 but use the 'leftTangent' and 'center' values
 
+        p1Right = curve[2]
+        p1Centre = curve[3]
+        p1Centre = np.array(p1Centre).astype(np.float32)
+        p1Right = np.array(p1Right).astype(np.float32)
+        p1Right = p1Centre + p1Right
+        # now lerp points betwen centre and tangent control points
+        p1a = p1Centre + (p1Right - p1Centre) * t
+        # now get halfway point between p0left and p1Right
+        p01a = p0left + (p1Right - p0left) * t
+        # now get halfway point between p0a and p01a
+        nLftCtrl = p0a + (p01a - p0a) * t
+        # now get halfway point between p01a and p1a
+        nRgtCtrl = p01a + (p1a - p01a) * t
+        # now get halfway point between nLftCtrl and nRgtCtrl
+        nCentre = nLftCtrl + (nRgtCtrl - nLftCtrl) * t
+        # subtract the centre poitt from tangent cotrol points
+        # points = np.array([p0centre, p0left, p1Right, p1Centre])
+        # newPoints = np.zeros((3, 2))
+        # for i in range(3):
+        #     x = (1-t) * points[i][0] + t * points[i+1][0]
+        #     y = (1-t) * points[i][1] + t * points[i+1][1]
+        #     newPoints[i] = np.array([x,y])
+        # nLftCtrl = newPoints[0]
+        # nRgtCtrl = newPoints[2]
+        # nCentre = newPoints[1]
+        nLftCtrl = nLftCtrl - nCentre
+        nRgtCtrl = nRgtCtrl - nCentre
+        newPoints = np.array([nLftCtrl, nCentre, nRgtCtrl])
+        return newPoints
 
+    def getPointsAtEdge(self, edgeIndex,frame):
+        """get the points at the edge of a shape"""
+        # get the correct points e.g in a 5 point shape edge 1 is (0,1), edge 5 is (4,0)
+        point1=(edgeIndex-1)%self.nPoints
+        point2=edgeIndex%self.nPoints
+        point1centre=self.shape[point1].center.getPosition(frame)
+        point2centre=self.shape[point2].center.getPosition(frame)
+        point1left=self.shape[point1].leftTangent.getPosition(frame)
+        point2right=self.shape[point2].rightTangent.getPosition(frame)
 
+        points=np.array([point1centre,point1left,point2right,point2centre])
+        return points
+
+    def insertPointAtEdge(self,frame,edgeIndex, t):
+        points=self.getPointsAtEdge(edgeIndex,frame)[:,:2]
+        newPoints=self.splitCurveNuke(points, t)
+        self.ctrlPoints.insert(edgeIndex,newPoints)
 
 
 class nShapeCreator(nShapeMaster):
@@ -312,8 +391,22 @@ class nShapeCreator(nShapeMaster):
         super().__init__()
         self.rotoNode = rotoNode
         self.nPoints = nPoints
-        self.rotoNode = rotoNode
         self.createShape()
+        self.getListofCtrlPoints()
+
+    def rebuildShape(self):
+        """rebuild the shape from the control points"""
+        #get rotonode curve knob and add new shape
+        curveKnob = self.rotoNode['curves']
+        self.shape = rp.Shape(curveKnob)
+
+        for point in self.npCtrlPoints:
+            self.shape.append(point[1])
+            self.shape[-1].leftTangent.addPositionKey(1,point[0])
+            self.shape[-1].rightTangent.addPositionKey(1,point[2])
+            self.shape[-1].featherLeftTangent.addPositionKey(1,point[0])
+            self.shape[-1].featherRightTangent.addPositionKey(1,point[2])
+
 
     def createShape(self):
         curveKnob = self.rotoNode['curves']
@@ -330,6 +423,101 @@ class nShapeCreator(nShapeMaster):
             x += windowCentre[0]
             y += windowCentre[1]
             self.points.append([x, y])
+
+    def deCasteljau(self,points, t):
+        """de casteljau algorithm for bezier curves"""
+        #first add point 0 to point 1 and point 3 to point 2
+
+        points=np.array(points)
+        points[1]=points[0]+points[1]
+        points[2]=points[3]+points[2]
+
+        deg=3
+
+        B=np.zeros((4,4,2))
+        for i in range(len(points)):
+            B[0][i][0]=points[i][0]
+            B[0][i][1]=points[i][1]
+
+
+        for k in range(1,deg+1):
+            for i in range(k,deg+1):
+                B[k][i]=(1-t)*B[k-1][i-1]+t*B[k-1][i]
+        ctrlPoints=np.array((B[1][1],B[2][2],B[3][3],B[2][3],B[1][3]))
+        #subtract the centre point from the tangent control points
+        print(f"ctrlPoints left: {ctrlPoints[0]} centre: {ctrlPoints[1]} right: {ctrlPoints[2]}")
+        ctrlPoints[0]=ctrlPoints[0]-B[0][0]
+        ctrlPoints[1]=ctrlPoints[1]-ctrlPoints[2]
+        ctrlPoints[3]=ctrlPoints[3]-ctrlPoints[2]
+        ctrlPoints[4]=ctrlPoints[4]-B[0][3]
+        return ctrlPoints
+
+
+
+
+
+    def splitCurveNuke(self,curve, t):
+        """given the control points of a bezier curve in list format [p0,p1,p2,p3]split it at t, retyrn the control points at the split"""
+        # extract the first 2 values from 'center' and 'rightTangent' and convert to list
+        p0centre = curve[0]
+        p0left = curve[1]
+        p0centre = np.array(p0centre).astype(np.float32)
+        p0left = np.array(p0left).astype(np.float32)
+        p0left = p0centre - p0left
+        # now get hafway points betwen centre and tangent control points
+        p0a = p0centre + (p0left - p0centre) * t
+        # now do the same for p1 but use the 'leftTangent' and 'center' values
+
+        p1Right = curve[2]
+        p1Centre = curve[3]
+        p1Centre = np.array(p1Centre).astype(np.float32)
+        p1Right = np.array(p1Right).astype(np.float32)
+        p1Right = p1Centre + p1Right
+        # now lerp points betwen centre and tangent control points
+        p1a = p1Centre + (p1Right - p1Centre) * t
+        # now get halfway point between p0left and p1Right
+        p01a = p0left + (p1Right - p0left) * t
+        # now get halfway point between p0a and p01a
+        nLftCtrl = p0a + (p01a - p0a) * t
+        # now get halfway point between p01a and p1a
+        nRgtCtrl = p01a + (p1a - p01a) * t
+        # now get halfway point between nLftCtrl and nRgtCtrl
+        nCentre = nLftCtrl + (nRgtCtrl - nLftCtrl) * t
+        # subtract the centre poitt from tangent cotrol points
+        # points = np.array([p0centre, p0left, p1Right, p1Centre])
+        # newPoints = np.zeros((3, 2))
+        # for i in range(3):
+        #     x = (1-t) * points[i][0] + t * points[i+1][0]
+        #     y = (1-t) * points[i][1] + t * points[i+1][1]
+        #     newPoints[i] = np.array([x,y])
+        # nLftCtrl = newPoints[0]
+        # nRgtCtrl = newPoints[2]
+        # nCentre = newPoints[1]
+        nLftCtrl = nLftCtrl - nCentre
+        nRgtCtrl = nRgtCtrl - nCentre
+        newPoints = np.array([nLftCtrl, nCentre, nRgtCtrl])
+        return newPoints
+
+    def getPointsAtEdge(self, edgeIndex,frame):
+        """get the points at the edge of a shape"""
+        # get the correct points e.g in a 5 point shape edge 1 is (0,1), edge 5 is (4,0)
+        point1=(edgeIndex-1)%self.nPoints
+        point2=edgeIndex%self.nPoints
+        point1centre=self.shape[point1].center.getPosition(frame)
+        point2centre=self.shape[point2].center.getPosition(frame)
+        point1right=self.shape[point1].rightTangent.getPosition(frame)
+        point2left=self.shape[point2].leftTangent.getPosition(frame)
+
+        points=np.array([point1centre,point1right,point2left,point2centre])
+        return points
+
+    def insertPointAtEdge(self,frame,edgeIndex, t):
+        points=self.getPointsAtEdge(edgeIndex,frame)[:,:2]
+        newPoints=self.deCasteljau(points, t)
+        self.npCtrlPoints.insert(edgeIndex,newPoints[1:4])
+        self.npCtrlPoints[edgeIndex - 1][2] = newPoints[0]
+        self.npCtrlPoints[edgeIndex + 1][0] = newPoints[4]
+        self.rebuildShape()
 
 
 class Datagen:
@@ -395,10 +583,25 @@ class Datagen:
 
 if __name__ == '__main__':
     #load nuke script
-    # nuke.scriptOpen("D:/pyG/data/DatasetGen.nk")
-    # roto = createRotoNode()
-    # shape=nShapeCreator(5, roto)
-    # shape.printPoints(0)
+    #nuke.scriptOpen("D:/pyG/data/DatasetGen.nk")
+    nuke.scriptNew("D:/pyG/data/point_split_test.nk")
+    roto = createRotoNode()
+    shape=nShapeCreator(5, roto)
+    shape.growPointsTangent(0, 10)
+    print("tangents grown")
+    shape.printPoints(0)
+    print(shape.npCtrlPoints)
+    shape.insertPointAtEdge(0,1, 0.25)
+    print("addedPoint")
+    shape.printPoints(0)
+    print(shape.shape.name)
+    #close script
+    #nuke.scriptClose()
+
+
+
+
+    nuke.scriptSave("D:/pyG/data/point_split_test.nk")
     # shape.randomisePoints(100,15,15)
     # shape.growPointsTangent(100,10)
     # shape.printPoints(100)
@@ -438,10 +641,10 @@ if __name__ == '__main__':
     # # #save nuke script
     #
     # #create new nuke script
-    nuke.scriptNew("D:/pyG/data/OutputLoader.nk")
-    shapeLoader=shapeLoader(r"D:\pyG\temp\RES\03-28_11-12-24")
+    # nuke.scriptNew("D:/pyG/data/OutputLoader.nk")
+    # shapeLoader=shapeLoader(r"D:\pyG\temp\RES\03-28_11-12-24")
     #save nuke script
-    nuke.scriptSave("D:/pyG/data/OutputLoader.nk")
+    #nuke.scriptSave("D:/pyG/data/OutputLoader.nk")
 
 
 
