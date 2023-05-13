@@ -4,6 +4,12 @@ import math
 import os
 import pickle
 import random
+from copy import copy, deepcopy
+
+import cv2
+
+#import cv2
+print(os.environ['PATH'])
 import nuke
 import nuke.rotopaint as rp
 import numpy as np
@@ -17,6 +23,41 @@ def createRotoNode():
     #set input to None
     rotoNode.setInput(0, None)
     return rotoNode
+
+def createTransformNode(Input=None):
+    """create a transform node"""
+    transformNode = nuke.createNode("Transform")
+    #set input to None
+    transformNode.setInput(0, Input)
+    #set transform expression to oscilate between 0 and 5 over 10 frames
+    transformNode['translate'].setExpression("sin(frame/10)*5")
+    return transformNode
+
+def createBlurNode(Input=None):
+    """create a blur node"""
+    blurNode = nuke.createNode("Blur")
+    #set input to None
+    blurNode.setInput(0, Input)
+    #set blur expression to oscilate between 0 and 5 over 10 frames
+    blurNode['size'].setExpression("sin(frame/10)*5")
+    return blurNode
+
+def createGradeNode(Input=None):
+    """create a grade node"""
+    gradeNode = nuke.createNode("Grade")
+    #set input to None
+    gradeNode.setInput(0, Input)
+    #set red gain to oscilate between 0.1 and 1 over 9 frames
+    gradeNode['white'].setSingleValue(False)
+    gradeNode['white'].setExpression("((sin(frame/3)*.5)+0.5)*0.9+0.1",0)
+    print(gradeNode['white'].getValue(0))
+    gradeNode['white'].setExpression("((sin(frame/4)*.5)+0.5)*0.9+0.1",1)
+    print(gradeNode['white'].getValue(1))
+    gradeNode['white'].setExpression("((sin(frame/6)*.5)+0.5)*0.9+0.1",2)
+    print(gradeNode['white'].getValue(2))
+
+    return gradeNode
+
 
 class point2D:
     def __init__(self, vertex, lftTang, rhtTang):
@@ -39,21 +80,33 @@ class nShapeMaster:
         self.shape = None
         self.windowSize=[224,224]
 
+
+
+
     def getCtrlPoints(self):
         """get nuke points from shape"""
         for p in range(len(self.shape)):
             self.ctrlPoints.append(self.shape[p])
 
-    def addPoint(self, x, y, ltx=0, lty=0, rtx=0, rty=0):
+    def addPoint(self, shape, x, y, ltx=0, lty=0, rtx=0, rty=0):
+
         ctrlPoint = rp.ShapeControlPoint(x, y)
         ctrlPoint.leftTangent = (ltx, lty)
+        ctrlPoint.featherLeftTangent = (ltx, lty)
         ctrlPoint.rightTangent = (rtx, rty)
-        self.shape.append(ctrlPoint)
+        ctrlPoint.featherRightTangent = (rtx, rty)
+        shape.append(ctrlPoint)
 
-    def addPoints(self):
+    def addPoints(self, shape1):
         """add points to shape"""
         for point in self.points:
-            self.addPoint( point[0], point[1])
+
+            if len(point) == 3:
+                self.addPoint(shape1, point[0][0], point[0][1], point[1][0], point[1][1], point[2][0], point[2][1])
+
+            else:
+                assert len(point) == 2, "point must be a list of 1 or 3 points"
+                self.addPoint(shape1, point[0], point[1])
 
     def printPoint(self,point, time):
 
@@ -89,12 +142,37 @@ class nShapeMaster:
         xy = self.getPtCoord(point, time)
         xy[0] += random.randrange(-xRange, xRange)
         xy[1] += random.randrange(-yRange, yRange)
+        #don't allow the angle between the point and centre to cross with that of adjacent points
+        #get the centre point
+        centre = self.getCentre(time)
+        #get the angle between the centre and the point
+        angle = self.lineNormalAngle(centre, xy)
+        #get the angle between the centre and the adjacent points
+        #get index of agjacent points and wrap around if needed
+
+        angleLeft = self.lineNormalAngle(centre, self.getPtCoord(self.shape[(pointIndex-1+len(self.shape))%len(self.shape)], time))
+        angleRight = self.lineNormalAngle(centre, self.getPtCoord(self.shape[(pointIndex+1)%len(self.shape)], time))
+        #check if the angle is between the adjacent points
+        if angle < angleLeft or angle > angleRight:
+            #don't change the point
+            return
         point.center.addPositionKey(time, xy)
 
     def getPtCoord(self, point, time):
         """get the x,y coords of a point in list format"""
         xy = list(point.center.getPosition(time))[:2]
         return xy
+
+    def calcCentre(self,points):
+        """get the centre point of the shape"""
+        x=0
+        y=0
+        for point in points:
+            x+=point[0]
+            y+=point[1]
+        x/=len(points)
+        y/=len(points)
+        return [x,y]
 
     def getPtTangentCoord(self,point,time):
         """get the x,y coords of a points tangents in list format"""
@@ -136,6 +214,7 @@ class nShapeMaster:
 
     def translatePoints(self,time,x,y):
         """translate all points"""
+
         for point in self.shape:
             xy=self.getPtCoord(point,time)
             xy[0]+=x
@@ -146,24 +225,67 @@ class nShapeMaster:
         """grow the tangent of a single point"""
         point=self.shape[pointIndex]
         xyLeft,xyRight=self.getPtTangentCoord(point,time)
+        centrePoint=self.getPtCoord(point,time)
         x=xyLeft[0]
         y=xyLeft[1]
         x+=amount
         y-=amount
+        #check that the normal between x and y and x and y right point outwards from the centre
+        centre=self.getCentre(time)
+        normalAngle=self.lineNormalAngle([x, y], xyRight)
+        centreAngle=self.lineNormalAngle(centrePoint, centre)
+        #print("normalAngle: {} centreAngle: {} pointIndex: {}".format(normalAngle,centreAngle,pointIndex))
+        if normalAngle>centreAngle:
+            x=xyLeft[0]
+            y=xyLeft[1]
+            x-=amount
+            y+=amount
         point.leftTangent.addPositionKey(time,[x,y])
         point.featherLeftTangent.addPositionKey(time,[x,y])
+        xyLeft=[x,y]
         x=xyRight[0]
         y=xyRight[1]
         x-=amount
         y+=amount
+        #check that the normal between x and y and x and y left point outwards from the centre
+        normalAngle=self.lineNormalAngle([x, y], xyLeft)
+        centreAngle=self.lineNormalAngle(centrePoint, centre)
+        if normalAngle>centreAngle:
+            x=xyRight[0]
+            y=xyRight[1]
+            x+=amount
+            y-=amount
         point.rightTangent.addPositionKey(time,[x,y])
         point.featherRightTangent.addPositionKey(time,[x,y])
+
+    def lineNormalAngle(self, leftPoint, rightPoint):
+        """get the normal of a line"""
+        x= rightPoint[0] - leftPoint[0]
+        y= rightPoint[1] - leftPoint[1]
+        x,y=y,-x
+        #convert to angle
+        angle=math.atan2(y,x)
+        return angle
 
     def growPointsTangent(self,time,amount):
         """grow the tangent of all points"""
         for point in range(len(self.shape)):
             self.growPointTangent(time,point,amount)
         self.getListofCtrlPoints()
+
+    def resetPointsTangent(self,time):
+        """reset the tangent of all points"""
+        for point in range(len(self.shape)):
+            self.resetPointTangent(time,point)
+        self.getListofCtrlPoints()
+
+    def resetPointTangent(self,time,pointIndex):
+        """reset the tangent of a single point"""
+        point=self.shape[pointIndex]
+        point.leftTangent.addPositionKey(time,[0,0])
+        point.featherLeftTangent.addPositionKey(time,[0,0])
+        point.rightTangent.addPositionKey(time,[0,0])
+        point.featherRightTangent.addPositionKey(time,[0,0])
 
     def randomisePointTangent(self,time,pointIndex,xRange,yRange):
         """randomise the tangent of a single point"""
@@ -194,7 +316,7 @@ class nShapeMaster:
 
     def getListofCtrlPoints(self):
         """return a list of control points from the nukeShape"""
-        print("getting list of control points")
+        #print("getting list of control points")
         self.npCtrlPoints=[]
         for i in range(self.nPoints):
             #convert point into an numpy array (lefttangent, center, righttangent)
@@ -202,12 +324,95 @@ class nShapeMaster:
             npPoint=npPoint[:,:2]
             self.npCtrlPoints.append(npPoint)
 
+    def dictShape2Points(self,shape):
+        """convert a dictionary shape to a list of points and tangents"""
+        # e.g. {'center': '{ 362, 240, 1 }', 'leftTangent': '{ 362, 240, 1 }', 'rightTangent': '{ 362, 240, 1 }'}=point2D([362.0, 240.0], [362.0, 240.0], [362.0, 240.0])
+        #points is numpy array of zeros with shape (nPoints,nCoords)
+        points=np.zeros((len(shape),6))
+        idx=0
+        for dictPoint in shape:
+            print(dictPoint)
+
+            dictPoint['center']=dictPoint['center'].replace('{','').replace('}','').split(',')
+            dictPoint['center']=[float(x) for x in dictPoint['center']]
+            points[idx,0:2]=dictPoint['center'][:2]
+            dictPoint['leftTangent']=dictPoint['leftTangent'].replace('{','').replace('}','').split(',')
+            dictPoint['leftTangent']=[float(x) for x in dictPoint['leftTangent']]
+            points[idx,2:4]=dictPoint['leftTangent'][:2]
+            dictPoint['rightTangent']=dictPoint['rightTangent'].replace('{','').replace('}','').split(',')
+            dictPoint['rightTangent']=[float(x) for x in dictPoint['rightTangent']]
+            points[idx,4:6]=dictPoint['rightTangent'][:2]
+            #points.append(point2D(dictPoint['center'],dictPoint['leftTangent'],dictPoint['rightTangent']))
+            idx+=1
+        return points
+
+
+class shapeFromRotopaint(nShapeMaster):
+    """create a shape from a rotopaint node"""
+    def __init__(self, rotoNode):
+        super().__init__()
+        self.rotoNode = rotoNode
+        self.name=f"{self.rotoNode.name()}_shape"
+        self.createShape()
+
+
+    def loopKeyFrames(self, start_frame, end_frame, num_loops):
+
+        # Get the shapes from the roto node
+        shape = self.find_first_shape(self.rotoNode['curves'].rootLayer)
+        self.getCtrlPoints()
+
+        # Calculate the original frame range length
+        frame_range_length = end_frame - start_frame + 1
+        datagen= Datagen(self, start_frame, end_frame)
+        pointsDict= datagen.pointsDict
+        expanded_points_dict = {}
+        for i in range(1, frame_range_length * num_loops + 1):
+            current_frame = i % frame_range_length
+            if current_frame == 0:
+                current_frame = frame_range_length
+            expanded_points_dict[i] = pointsDict[current_frame]
+
+        # starting at frame_range_length+1. go through the exapnded dict and set keyframes
+        for i in range(frame_range_length+1, frame_range_length * num_loops + 1):
+            frameDict= expanded_points_dict[i]
+            frameDict2=deepcopy(frameDict)
+            keyframes= self.dictShape2Points(frameDict2)
+            print(i)
+            for point in range(len(self.shape)):
+                self.ctrlPoints[point].center.addPositionKey(i,keyframes[point][:2])
+                self.ctrlPoints[point].leftTangent.addPositionKey(i,keyframes[point][2:4])
+
+
+
+
+
+
+    def find_first_shape(self,layer):
+        for item in layer:
+            if isinstance(item, nuke.rotopaint.Shape):
+                return item
+            elif isinstance(item, nuke.rotopaint.Layer):
+                shape = self.find_first_shape(item)
+                if shape:
+                    return shape
+        return None
+
+    def createShape(self):
+        """create a shape from a rotopaint node"""
+        root_layer = self.rotoNode['curves'].rootLayer
+        self.shape = self.find_first_shape(root_layer)
+        if self.shape:
+            self.nPoints = len(self.shape)
+            self.getListofCtrlPoints()
+        else:
+            raise ValueError("No shape found in the rotopaint node")
 
 
 
 class shapeLoader(nShapeMaster):
     """load shapes from pickle file into a roto node"""
-    def __init__(self, outputDir):
+    def __init__(self, outputDir,gtLabels=None):
         super().__init__()
         self.outputDir = outputDir
         self.pickeFiles=self.getFiles()
@@ -215,11 +420,25 @@ class shapeLoader(nShapeMaster):
         self.npShape = None
         self.imagePath = None
         self.filesDict= None
+        self.gtLabels = gtLabels
         #self.loadShape()
         #self.rotoNode = nuke.createNode('Roto')
         self.getFiles()
+        self.nEpochs=len(self.filesDict[0])
+        self.allLoss=np.zeros([self.nEpochs,3])
+        if gtLabels is not None:
+            self.loadGTJson()
         self.createShapes()
+        self.allLoss/=len(self.filesDict)
+        self.printLoss()
 
+    def printLoss(self):
+        """print epoch Num then loss"""
+        for i in range(self.nEpochs):
+            print("Epoch: {} totalLoss: {}  shapeLoss: {}  tangentLoss: {}".format(i,self.allLoss[i,0],self.allLoss[i,1],self.allLoss[i,2]))
+
+
+        # this has been copied and pasted -refactor when time
 
     def getFiles(self):
         """get all the pickle files in the output directory as a list of lists """
@@ -228,11 +447,7 @@ class shapeLoader(nShapeMaster):
         for root, dirnames, filenames in os.walk(self.outputDir):
             for filename in fnmatch.filter(filenames, '*.pkl'):
                 files.append([root, filename])
-        # get the last number of the file name separated by underscore
-        # e.g. 2_0.pkl = 0 and add the file path to a dictionary with the number as the key
-        # e.g. {0: ['D:\pyG\data\points\processed\2_0.pkl']}
-        # if the key already exists append the file path to the list
-        # e.g. {0: ['D:\pyG\data\points\processed\2_0.pkl','D:\pyG\data\points\processed\3_0.pkl']}
+
         filesDict = {}
         for file in files:
             key = int(file[1].split('_')[1].split('.')[0])
@@ -242,6 +457,22 @@ class shapeLoader(nShapeMaster):
                 filesDict[key] = [os.path.join(file[0], file[1])]
 
         self.filesDict=filesDict
+
+    def loadGTJson(self):
+        """load the ground truth labels from a json file"""
+        with open(self.gtLabels) as f:
+            self.gtLabels = json.load(f)
+
+    def calcLoss(self):
+        """calculate the loss between the ground truth labels and the current shape"""
+        #convert self.GTshape to a numpy array
+        norm=self.pointMatchLoss(self.gtPoints,self.npShape,6)
+        pointNorm=self.pointMatchLoss(self.gtPoints[:,:2],self.npShape[:,:2],2)
+        tanNorm=self.pointMatchLoss(self.gtPoints[:,2:],self.npShape[:,2:],4)
+        loss=np.array([norm,pointNorm,tanNorm])
+
+        return loss
+
 
     def createShapes(self):
         shapesList=self.filesDict.keys()
@@ -258,7 +489,7 @@ class shapeLoader(nShapeMaster):
             #add a read node with the shapes image path
             self.loadImage()
             # set the input of the rotonode to the read node
-            print("connecting read node {} to roto node {}".format(self.readNode.name(),self.rotoNode.name()))
+            #print("connecting read node {} to roto node {}".format(self.readNode.name(),self.rotoNode.name()))
             self.rotoNode.setInput(0, self.readNode)
             #create the shape
             #set current time in nuke to frame 1
@@ -266,11 +497,14 @@ class shapeLoader(nShapeMaster):
             nuke.frame(frame)
             self.createShape()
             #interate through the rest of the shapes in the list
+            idx=0
             for shape in self.filesDict[shape][1:]:
-                frame+=1
                 nuke.frame(frame)
                 self.loadShape(shape)
+                self.allLoss[idx]+=self.calcLoss()
                 self.addPointsToShape()
+                frame+=1
+                idx+=1
 
     def addPointsToShape(self):
         """add point keyframes to the existing shape"""
@@ -278,7 +512,7 @@ class shapeLoader(nShapeMaster):
         for i in range(len(self.points)):
             #add point at current time
             point=self.shape[i]
-            point.center.addPositionKey(nuke.frame(),self.points[i])
+            point.center.addPositionKey(nuke.frame(),self.points[i][0])
 
 
 
@@ -289,17 +523,74 @@ class shapeLoader(nShapeMaster):
             name, shape = pickle.load(f)
         self.npShape = shape
         self.imagePath = name
-        print ("loaded shape {} from {}".format(name,path))
+        #print ("loaded shape {} from {}".format(name,path))
     def npShape2points(self):
         """convert a numpy shape to a list of points"""
         self.points=[]
         for point in self.npShape:
-            self.points.append([point[0], point[1]])
+            if len(point) == 2:
+                self.points.append(point)
+            elif len(point) == 6:
+                #split into 3 points
+                ctrlPoint = [list(point[:2])]
+                ctrlPoint.append(list(point[2:4]))
+                ctrlPoint.append(list(point[4:6]))
+                self.points.append(ctrlPoint)
+
+
+
+    def addGTShape(self):
+        #get the shape number from the image name e.g 'D:/pyG/data/points/\\spoints.6871.png' = 6871
+        shapeNum = int(self.imagePath.split('.')[-2].split('\\')[-1])
+        #get the shape from the gtLabels dictionary
+        self.gtShape = self.gtLabels[str(shapeNum)]
+        #convert the shape to a list of points
+        self.gtPoints = self.dictShape2Points(self.gtShape)
+        #add shape to roto node
+        self.GTshape=rp.Shape(self.curveKnob)
+        for point in self.gtPoints:
+            self.addPoint(self.GTshape, point[0], point[1], point[2], point[3], point[4], point[5])
+        att=self.GTshape.getAttributes()
+        att.set(nuke.frame(), 'ro', 0.0)
+        att.set(nuke.frame(), 'go', 1.0)
+        att.set(nuke.frame(), 'bo', 0.0)
+
+
     def createShape(self):
         self.curveKnob = self.rotoNode['curves']
+        # if gt shape exists add it to the roto node
+        if self.gtLabels is not None:
+            self.addGTShape()
         self.shape = rp.Shape(self.curveKnob)
         self.npShape2points()
-        self.addPoints()
+        self.addPoints(self.shape)
+
+    def pointMatchLoss(self,shape1, shape2, nCoords=6):
+        # shape1 and shape2 are tensors of shape (K,2)
+        # shape1 = shape1.cpu().detach().numpy()
+        # shape2 = shape2.cpu().detach().numpy()
+        K = shape1.shapes[0]
+        assert K == shape2.shapes[0]
+        sumNorm = 0
+        #rewrite the below but with numpy instead of tensors
+        Norms = np.zeros((K, nCoords))
+        for jInd in range(K):
+            L1Norm = 0
+            for iInd in range(K):
+                p2i = (iInd + jInd) % K
+                # print(f"j={jInd}, i={iInd}, p2Index={p2i}")
+                L1Norm += abs((shape1[iInd] - shape2[p2i]))
+                # print(f"L1Norm = {L1Norm}")
+            Norms[jInd] = L1Norm
+        #print(f"Norms = {Norms}")
+        # sum the x and y components of the norms then grab the minimum
+        sumNorm = np.sum(Norms, axis=1)
+        # print(f"sumNorm = {sumNorm}")
+        minNorm = np.min(sumNorm)
+        #print(f"minNorm = {minNorm}")
+        return minNorm
+
+
 
     def loadImage(self):
         """convert image path from processed path to raw path then load
@@ -412,7 +703,7 @@ class nShapeCreator(nShapeMaster):
         curveKnob = self.rotoNode['curves']
         self.shape = rp.Shape(curveKnob)
         self.calculatePoints()
-        self.addPoints()
+        self.addPoints(self.shape)
 
     def calculatePoints(self,radius=50):
         """calculate n evenly spaced points on a circle"""
@@ -483,16 +774,6 @@ class nShapeCreator(nShapeMaster):
         nRgtCtrl = p01a + (p1a - p01a) * t
         # now get halfway point between nLftCtrl and nRgtCtrl
         nCentre = nLftCtrl + (nRgtCtrl - nLftCtrl) * t
-        # subtract the centre poitt from tangent cotrol points
-        # points = np.array([p0centre, p0left, p1Right, p1Centre])
-        # newPoints = np.zeros((3, 2))
-        # for i in range(3):
-        #     x = (1-t) * points[i][0] + t * points[i+1][0]
-        #     y = (1-t) * points[i][1] + t * points[i+1][1]
-        #     newPoints[i] = np.array([x,y])
-        # nLftCtrl = newPoints[0]
-        # nRgtCtrl = newPoints[2]
-        # nCentre = newPoints[1]
         nLftCtrl = nLftCtrl - nCentre
         nRgtCtrl = nRgtCtrl - nCentre
         newPoints = np.array([nLftCtrl, nCentre, nRgtCtrl])
@@ -522,22 +803,53 @@ class nShapeCreator(nShapeMaster):
 
 class Datagen:
     """create image sequences and spline data from an nShape object"""
-    def __init__(self,shape):
-        self.shape=shape
+    def __init__(self, shapes=None,switch_frames=[] ,lastNode=None,switch=None, timeID="unknown", range=[1, 200]):
+        self.shapes=shapes
+        self.timeID=timeID
         self.root = "D:/pyG/data/points/"
-        self.frameRange=[1,200]
+        self.frameRange= range
+        self.switch_frames=switch_frames
+        self.switch=switch
         self.pointsDict={}
         self.createPointsDict()
-        self.attachWriteNode()
+        self.lastNode=lastNode
+        #self.attachWriteNode()
+
+    # def createPointsDict(self):
+    #     """create a dictionary of points for each frame"""
+    #     for frame in range(self.frameRange[0],self.frameRange[1]+1):
+    #         pointDictList=[]
+    #         for point in self.shapes.shapes:
+    #             pointAtTime=self.shapes.getPointDict(point, frame)
+    #             pointDictList.append(pointAtTime)
+    #         self.pointsDict[frame]=pointDictList
 
     def createPointsDict(self):
         """create a dictionary of points for each frame"""
+        shape_index = 0
         for frame in range(self.frameRange[0],self.frameRange[1]+1):
+            # Switch shapes at the specified frames
+            if shape_index < len(self.switch_frames) and frame == self.switch_frames[shape_index]:
+                shape_index += 1
+                print(f"switching to shape {shape_index} at frame {frame}")
+
+
+            # Get the current shape
+            shape = self.shapes[shape_index]
+            # every 1000 frames print the shapes name
+            if frame % 1000 == 0:
+                print(f"frame: {frame} shape: {shape.name}")
+            self.switch["which"].setValueAt(shape_index,frame)
+
+
+            # Generate the points for the current frame
             pointDictList=[]
-            for point in self.shape.shape:
-                pointAtTime=self.shape.getPointDict(point,frame)
+            for point in shape.shape:
+                pointAtTime=shape.getPointDict(point,frame)
                 pointDictList.append(pointAtTime)
             self.pointsDict[frame]=pointDictList
+
+        print("finished creating points dict")
 
     def printPointsDict(self):
         """print the points dictionary"""
@@ -547,12 +859,13 @@ class Datagen:
                 print(point)
             print("")
 
-    def savePointsDict(self):
+    def savePointsDict(self,name):
         """save the points dictionary"""
-
         jsonobj=json.dumps(self.pointsDict)
-        with open("{}points.json".format(self.root),"w") as f:
+        with open("{}points{}.json".format(self.root,name),"w") as f:
             f.write(jsonobj)
+
+
 
 
     def attachWriteNode(self):
@@ -560,7 +873,8 @@ class Datagen:
         writeNode=nuke.createNode("Write")
         writeNode["file_type"].setValue("png")
 
-        writeNode["file"].setValue("{}spoints.####.png".format(self.root))
+        writeNode["file"].setValue("{}{}/spoints.####.png".format(self.root,self.timeID))
+        writeNode["create_directories"].setValue(1)
         writeNode["colorspace"].setValue("linear")
         writeNode["channels"].setValue("rgb")
         writeNode["create_directories"].setValue(1)
@@ -569,12 +883,77 @@ class Datagen:
         #set first and last frame
         writeNode["first"].setValue(self.frameRange[0])
         writeNode["last"].setValue(self.frameRange[1])
-        writeNode.setInput(0,self.shape.rotoNode)
+        if self.lastNode is not None:
+            writeNode.setInput(0,self.lastNode)
+        else:
+            writeNode.setInput(0, self.shapes.rotoNode)
         self.outWriteNode=writeNode
 
     def render(self):
         """render the write node"""
         nuke.render(self.outWriteNode, start=self.frameRange[0], end=self.frameRange[1])
+
+
+class CornerPinRoto(shapeFromRotopaint):
+    """the 4 points animation from a cornerpin node and apply it to a roto node"""
+    def __init__(self, cornerPinNode, rotoNode=None, frameRange=[1,200]):
+        super().__init__(rotoNode)
+        self.cornerPinNode=cornerPinNode
+        self.rotoNode=rotoNode
+        self.frameRange=frameRange
+
+
+    def getCornerPin(self,frame):
+            to4 = [self.cornerPinNode['to4'].getValueAt(frame,0),self.cornerPinNode['to4'].getValueAt(frame,1)]
+            to3 = [self.cornerPinNode['to3'].getValueAt(frame,0),self.cornerPinNode['to3'].getValueAt(frame,1)]
+            to1 = [self.cornerPinNode['to1'].getValueAt(frame,0),self.cornerPinNode['to1'].getValueAt(frame,1)]
+            to2 = [self.cornerPinNode['to2'].getValueAt(frame,0),self.cornerPinNode['to2'].getValueAt(frame,1)]
+            print(f"to1: {to1} to2: {to2} to3: {to3} to4: {to4}")
+            return [to1,to2,to3,to4]
+
+
+    def getCornerPinFrom(self,frame):
+            from4 = [self.cornerPinNode['from4'].getValueAt(frame,0),self.cornerPinNode['from4'].getValueAt(frame,1)]
+            from3 = [self.cornerPinNode['from3'].getValueAt(frame,0),self.cornerPinNode['from3'].getValueAt(frame,1)]
+            from1 = [self.cornerPinNode['from1'].getValueAt(frame,0),self.cornerPinNode['from1'].getValueAt(frame,1)]
+            from2 = [self.cornerPinNode['from2'].getValueAt(frame,0),self.cornerPinNode['from2'].getValueAt(frame,1)]
+            print(f"from1: {from1} from2: {from2} from3: {from3} from4: {from4}")
+            return [from1,from2,from3,from4]
+
+    def getCornerPinFrame(self):
+        """get the cornerpin points for each frame"""
+        cornerPinFrameList=[]
+        for frame in range(self.frameRange[0],self.frameRange[1]+1):
+            cornerPinFrameList.append(self.getCornerPin(frame))
+        return cornerPinFrameList
+
+    def getTransformMatrix(self,frame):
+        """get the transform matrix from the cornerpin node"""
+        matrix=cv2.getPerspectiveTransform(np.float32(self.getCornerPinFrom(frame)),np.float32(self.getCornerPin(frame)))
+        return matrix
+
+    def getAffineTransformMatrix(self,frame):
+        """get the transform matrix from the cornerpin node"""
+        matrix=cv2.getAffineTransform(np.float32(self.getCornerPinFrom(frame)[:3]),np.float32(self.getCornerPin(frame)[:3]))
+        return matrix
+    def transformPoint(self,point,matrix):
+        """transform a point with a matrix"""
+        point=np.array([point[0],point[1],1])
+        point=np.dot(matrix,point)
+        return [point[0],point[1]]
+
+    def transformRoto(self):
+        self.getCtrlPoints()
+        pointOriginList = []
+        for point in self.ctrlPoints:
+            pointOriginList.append(point.center.getPosition(self.frameRange[0]))
+        for frame in range(self.frameRange[0],self.frameRange[1]+1):
+            matrix=self.getAffineTransformMatrix(frame)
+            idx=0
+            for point in self.ctrlPoints:
+                point.center.addPositionKey(frame,self.transformPoint(pointOriginList[idx],matrix))
+                idx+=1
+        self.rotoNode["curves"].rootLayer.append(self.shape)
 
 
 
@@ -584,24 +963,10 @@ class Datagen:
 if __name__ == '__main__':
     #load nuke script
     #nuke.scriptOpen("D:/pyG/data/DatasetGen.nk")
-    nuke.scriptNew("D:/pyG/data/point_split_test.nk")
-    roto = createRotoNode()
-    shape=nShapeCreator(5, roto)
-    shape.growPointsTangent(0, 10)
-    print("tangents grown")
-    shape.printPoints(0)
-    print(shape.npCtrlPoints)
-    shape.insertPointAtEdge(0,1, 0.25)
-    print("addedPoint")
-    shape.printPoints(0)
-    print(shape.shape.name)
-    #close script
-    #nuke.scriptClose()
-
-
-
-
-    nuke.scriptSave("D:/pyG/data/point_split_test.nk")
+    #nuke.scriptNew("D:/pyG/data/point_split_test.nk")
+    # roto = createRotoNode()
+    # shape=nShapeCreator(5, roto)
+    # shape.printPoints(0)
     # shape.randomisePoints(100,15,15)
     # shape.growPointsTangent(100,10)
     # shape.printPoints(100)
@@ -623,28 +988,196 @@ if __name__ == '__main__':
     # shape.randomisePoints(4000, 15, 15)
     # shape.randomisePoints(5000, 15, 15)
     # shape.randomisePoints(6000, 15, 15)
+    # shape.resetPointsTangent(6100)
     # shape.translatePoints(7000, -15, 15)
-    # shape.randomisePoints(7000, 15, 15)
+    # shape.randomisePoints(7100, 15, 15)
     # shape.randomisePoints(8000, 15, 15)
     # shape.randomisePoints(9000, 15, 15)
     # shape.randomisePoints(10000, 15, 15)
-    # dataGenenerator=Datagen(shape)
+
+
+
+
+
+    #nuke.scriptSave("D:/pyG/data/point_split_test.nk")
+
+
+    # daymonthtime = datetime.now().strftime("%d%m%y_%H%M%S")
+    # scriptname = "D:/pyG/data/DatasetGen{}.nk".format(daymonthtime)
+    # nuke.scriptNew(scriptname)
+    # #set full size format of nuke script to be 224x224
+    # p2sFormat='224 224 p2s'
+    # nuke.addFormat(p2sFormat)
+    # nuke.root()["format"].setValue("p2s")
+    # nuke.scriptNew(scriptname)
+    # roto = createRotoNode()
+    # blur=createBlurNode(roto)
+    # grade=createGradeNode(blur)
+    # shape=nShapeCreator(5, roto)
+    # shape.randomisePoints(100,15,15)
+    # shape.growPointsTangent(100,10)
+    # shape.printPoints(100)
+    # shape.randomisePoints(150, 15, 15)
+    # shape.randomisePointsTangent(25,5,5)
+    # shape.randomisePointsTangent(200,5,4)
+    # shape.growPoints(110,0.4)
+    # shape.printPoints(200)
+    # shape.growPoints(135, -0.3)
+    # shape.translatePoints(200, 15,15)
+    # shape.translatePoints(400, -30,-20)
+    # shape.growPoints(600, 0.5)
+    # shape.growPoints(700, -0.5)
+    # shape.resetPointsTangent(750)
+    # shape.randomisePoints(900, 30, 30)
+    # shape.randomisePoints(1800, 5, 5)
+    # shape.growPointsTangent(2000, 5)
+    # shape.growPoints(8000, 0.5)
+    # shape.randomisePoints(3000, 15, 15)
+    # shape.randomisePoints(4000, 15, 15)
+    # shape.randomisePoints(5000, 15, 15)
+    # shape.resetPointsTangent(5100)
+    # shape.randomisePoints(6000, 15, 15)
+    # shape.growPointsTangent(6100, 0.5)
+    # shape.translatePoints(7000, -15, 15)
+    # shape.randomisePoints(7000, 15, 15)
+    # shape.growPointsTangent(7100, 2)
+    # shape.randomisePoints(8000, 15, 15)
+    # shape.randomisePoints(9000, 15, 15)
+    # shape.growPointsTangent(9100, 10)
+    # shape.randomisePoints(10000, 15, 15)
+    # dataGenenerator=Datagen(shape,grade,daymonthtime)
     # dataGenenerator.frameRange=[1,10000]
     # dataGenenerator.createPointsDict()
     # dataGenenerator.printPointsDict()
-    # dataGenenerator.savePointsDict()
-    # # #
-    # # # #render write Node
+    # dataGenenerator.savePointsDict(daymonthtime)
+    # # # #
+    # # # # #render write Node
     # dataGenenerator.render()
-    # nuke.scriptSave("D:/pyG/data/DatasetGen.nk")
+    # nuke.scriptSave(scriptname)
     # nuke.scriptClose()
-    # # #save nuke script
+
+    nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+    #grade=nuke.toNode("Grade1")
+    #roto=nuke.toNode("Roto1")
+    #blur = createBlurNode(roto)
+    #grade = nuke.toNode("Grade1")
+    #trans=nuke.toNode("Transform1")
+    #shape=shapeFromRotopaint(roto)
+    # total_offset_x = 0
+    # total_offset_y = 0
     #
+    # for frame in range(1, 10000):
+    #     # Generate random x and y offsets
+    #     x = random.randint(-20, 20)
+    #     y = random.randint(-10, 10)
+    #     scale=random.uniform(-0.005,0.005)
+    #
+    #     # Check if the new x and y offsets will breach the limits
+    #     if total_offset_x + x > 150:
+    #         x = random.randint(-20, 0)
+    #     elif total_offset_x + x < -150:
+    #         x = random.randint(0, 10)
+    #
+    #     if total_offset_y + y > 100:
+    #         y = random.randint(-10, 0)
+    #     elif total_offset_y + y < -100:
+    #         y = random.randint(0, 10)
+    #
+    #     # Update total offsets
+    #     total_offset_x += x
+    #     total_offset_y += y
+    #
+    #     shape.translatePoints(frame, x, y)
+    #     shape.growPoints(frame,scale)
+    #     shape.growPointsTangent(frame, scale)
+    #
+    #     transx = trans["translate"].valueAt(frame, 0)
+    #     transy = trans["translate"].valueAt(frame, 1)
+    #     scaleXY= trans["scale"].valueAt(frame, 0)
+    #
+    #     trans["translate"].setValueAt(x + transx, frame, 0)
+    #     trans["translate"].setValueAt(y + transy, frame, 1)
+    #     trans["scale"].setValueAt(scaleXY+scale, frame, 0)
+    #
+    # Frange=10000
+    # nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+    # # grade=nuke.toNode("Grade1")
+    # roto = nuke.toNode("Roto4")
+    # # blur = createBlurNode(roto)
+    # grade = nuke.toNode("Grade2")
+    # trans = nuke.toNode("Transform3")
+    #shape2 = shapeFromRotopaint(roto)
+    # total_offset_x = 0
+    # total_offset_y = 0
+    # print("generating shape 2 keyframes")
+    # for frame in range(1, Frange):
+    #     # Generate random x and y offsets
+    #     x = random.randint(-20, 20)
+    #     y = random.randint(-10, 10)
+    #     scale=random.uniform(-0.005,0.005)
+    #
+    #     # Check if the new x and y offsets will breach the limits
+    #     if total_offset_x + x > 150:
+    #         x = random.randint(-20, 0)
+    #     elif total_offset_x + x < -150:
+    #         x = random.randint(0, 10)
+    #
+    #     if total_offset_y + y > 100:
+    #         y = random.randint(-10, 0)
+    #     elif total_offset_y + y < -100:
+    #         y = random.randint(0, 10)
+    #
+    #     # Update total offsets
+    #     total_offset_x += x
+    #     total_offset_y += y
+    #
+    #     shape2.translatePoints(frame, x, y)
+    #     shape2.growPoints(frame,scale)
+    #     shape2.growPointsTangent(frame, scale)
+    #
+    #     transx = trans["translate"].valueAt(frame, 0)
+    #     transy = trans["translate"].valueAt(frame, 1)
+    #     scaleXY= trans["scale"].valueAt(frame, 0)
+    #
+    #     trans["translate"].setValueAt(x + transx, frame, 0)
+    #     trans["translate"].setValueAt(y + transy, frame, 1)
+    #     trans["scale"].setValueAt(scaleXY+scale, frame, 0)
+
+
+
+
+
+    #roto['curves'].rootLayer.append(shape2.shape)
+    # # #shape.loopKeyFrames(1,172,10)
+    # switchNode=nuke.toNode("Switch1")
+    # dataGenenerator=Datagen(shapes=[shape,shape2],switch_frames=[5000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,10000])
+    # # # dataGenenerator.frameRange=[0,172]
+    # #dataGenenerator.createPointsDict()
+    # # # dataGenenerator.printPointsDict()
+    # dataGenenerator.savePointsDict("transform_test")
+    # #dataGenenerator.attachWriteNode()
+    # nuke.scriptSave("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+    # print("script saved")
+    # #dataGenenerator.render()
+
+
+    # test cornerPointoRoto
+    cp=nuke.toNode("CornerPin2D4")
+    roto=nuke.toNode("Roto5")
+    cp2roto=CornerPinRoto(cp,roto,frameRange=[0,172])
+    cp2roto.transformRoto()
+
+    nuke.scriptSave("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+
+    nuke.scriptClose()
+
+
+
     # #create new nuke script
     # nuke.scriptNew("D:/pyG/data/OutputLoader.nk")
-    # shapeLoader=shapeLoader(r"D:\pyG\temp\RES\03-28_11-12-24")
-    #save nuke script
-    #nuke.scriptSave("D:/pyG/data/OutputLoader.nk")
+    # shapeLoader=shapeLoader(r"D:\pyG\temp\RES\04-12-14-45-10",gtLabels=r"D:\pyG\data\points\120423_183451\points120423_183451.json")
+    # #save nuke script
+    # nuke.scriptSave("D:/pyG/data/OutputLoader.nk")
 
 
 
