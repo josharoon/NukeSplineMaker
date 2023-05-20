@@ -5,6 +5,7 @@ import os
 import pickle
 import random
 from copy import copy, deepcopy
+import bezier
 
 import cv2
 
@@ -331,7 +332,7 @@ class nShapeMaster:
         points=np.zeros((len(shape),6))
         idx=0
         for dictPoint in shape:
-            print(dictPoint)
+            #print(dictPoint)
 
             dictPoint['center']=dictPoint['center'].replace('{','').replace('}','').split(',')
             dictPoint['center']=[float(x) for x in dictPoint['center']]
@@ -355,38 +356,99 @@ class shapeFromRotopaint(nShapeMaster):
         self.name=f"{self.rotoNode.name()}_shape"
         self.createShape()
 
-
     def loopKeyFrames(self, start_frame, end_frame, num_loops):
 
         # Get the shapes from the roto node
-        shape = self.find_first_shape(self.rotoNode['curves'].rootLayer)
         self.getCtrlPoints()
 
         # Calculate the original frame range length
-        frame_range_length = end_frame - start_frame + 1
-        datagen= Datagen(self, start_frame, end_frame)
-        pointsDict= datagen.pointsDict
+        frame_range_length = end_frame - start_frame
+        datagen = Datagen(self, range=[start_frame, end_frame])
+        pointsDict = datagen.pointsDict
         expanded_points_dict = {}
-        for i in range(1, frame_range_length * num_loops + 1):
-            current_frame = i % frame_range_length
+        for i in range(start_frame, start_frame + frame_range_length * num_loops):
+            # Shift frame range so it starts from 0
+            shifted_frame = i - start_frame
+            current_frame = shifted_frame % frame_range_length
             if current_frame == 0:
                 current_frame = frame_range_length
+            # Shift back after calculation but make sure it cycles within the start and end frame
+            current_frame = start_frame + (current_frame - 1) % frame_range_length
             expanded_points_dict[i] = pointsDict[current_frame]
 
-        # starting at frame_range_length+1. go through the exapnded dict and set keyframes
-        for i in range(frame_range_length+1, frame_range_length * num_loops + 1):
-            frameDict= expanded_points_dict[i]
-            frameDict2=deepcopy(frameDict)
-            keyframes= self.dictShape2Points(frameDict2)
-            print(i)
+        # Starting at frame_range_length+1, go through the expanded dict and set keyframes
+        for i in range(start_frame + frame_range_length, start_frame + frame_range_length * num_loops):
+            frameDict = expanded_points_dict[i]
+            frameDict2 = deepcopy(frameDict)
+            keyframes = self.dictShape2Points(frameDict2)
+            #print(i)
             for point in range(len(self.shape)):
-                self.ctrlPoints[point].center.addPositionKey(i,keyframes[point][:2])
-                self.ctrlPoints[point].leftTangent.addPositionKey(i,keyframes[point][2:4])
+                self.ctrlPoints[point].center.addPositionKey(i, keyframes[point][:2])
+                self.ctrlPoints[point].leftTangent.addPositionKey(i, keyframes[point][2:4])
+        self.rotoNode['curves'].rootLayer.append(self.shape)
 
+    import numpy as np
 
+    def convert_to_bezier_format(self,point_array):
+        bezier_curves = []
+        n = len(point_array)
+        for i in range(n):
+            start_point = point_array[i][1]  # center of current curve
+            control_point1 = start_point + point_array[i][2]  # right tangent
+            control_point2 = point_array[(i + 1) % n][1] + point_array[(i + 1) % n][0]  # left tangent of next curve
+            end_point = point_array[(i + 1) % n][1]  # center of next curve
+            bezier_curves.append(np.vstack((start_point, control_point1, control_point2, end_point)))
+        return bezier_curves
 
+    def reduceDegree(self):
+        """Convert from cubic bezier to quadratic bezier"""
+        bezier_curves=self.convert_to_bezier_format(self.npCtrlPoints)
+        reduced_curves = []
+        for curve in bezier_curves:
 
+            b_curve=bezier.Curve(curve.T, degree=3)
+            deg2Curve = b_curve.reduce_()
+            reduced_curves.append(deg2Curve)
 
+        return reduced_curves
+
+    def createtemplate(self):
+        """create a template from the rotopaint node"""
+        curves=self.reduceDegree()
+        curves=self.subdivideCurves(curves)
+        control_points = []
+        for curve in curves:
+            for point in curve.nodes.T:# Ignore last point
+                control_points.append(point[0])  # X coordinate
+                control_points.append(point[1])  # Y coordinate
+        #normalize control points
+        control_points=np.array(control_points)
+        control_points-=control_points.min()
+        control_points/=control_points.max()
+        return list(control_points)
+
+    def subdivideCurves(self, curves):
+        while len(curves) < 15:
+            # subdivide the curves till we have 15
+            # get longest curve
+            max_length = 0
+            max_index = 0
+            for i, curve in enumerate(curves):
+
+                length = curve.length
+                if length > max_length:
+                    max_length = length
+                    max_index = i
+            longest_curve = curves[max_index]
+            left, right = longest_curve.subdivide()
+
+            # remove the longest curve
+            curves.pop(max_index)
+
+            # insert the subdivided curves at the position of the removed curve
+            curves.insert(max_index, left)
+            curves.insert(max_index + 1, right)
+        return curves
 
     def find_first_shape(self,layer):
         for item in layer:
@@ -827,27 +889,34 @@ class Datagen:
     def createPointsDict(self):
         """create a dictionary of points for each frame"""
         shape_index = 0
-        for frame in range(self.frameRange[0],self.frameRange[1]+1):
+        for frame in range(self.frameRange[0], self.frameRange[1] + 1):
+
             # Switch shapes at the specified frames
-            if shape_index < len(self.switch_frames) and frame == self.switch_frames[shape_index]:
+            # Check if self.switch_frames is a list before trying to index it
+            if isinstance(self.switch_frames, list) and shape_index < len(self.switch_frames) and frame == \
+                    self.switch_frames[shape_index]:
                 shape_index += 1
                 print(f"switching to shape {shape_index} at frame {frame}")
 
+                # Get the current shape
+                shape = self.shapes[shape_index]
 
-            # Get the current shape
-            shape = self.shapes[shape_index]
-            # every 1000 frames print the shapes name
-            if frame % 1000 == 0:
-                print(f"frame: {frame} shape: {shape.name}")
-            self.switch["which"].setValueAt(shape_index,frame)
-
-
+                # every 1000 frames print the shapes name
+                if frame % 1000 == 0:
+                    print(f"frame: {frame} shape: {shape.name}")
+                print(f"setting keyframe for switch at frame {frame} , value {shape_index}")
+                self.switch["which"].setValueAt(shape_index, frame)
+            else:
+                if isinstance(self.shapes, list):
+                    shape = self.shapes[shape_index]
+                else:
+                    shape = self.shapes
             # Generate the points for the current frame
-            pointDictList=[]
+            pointDictList = []
             for point in shape.shape:
-                pointAtTime=shape.getPointDict(point,frame)
+                pointAtTime = shape.getPointDict(point, frame)
                 pointDictList.append(pointAtTime)
-            self.pointsDict[frame]=pointDictList
+            self.pointsDict[frame] = pointDictList
 
         print("finished creating points dict")
 
@@ -947,7 +1016,7 @@ class CornerPinRoto(shapeFromRotopaint):
         pointOriginList = []
         for point in self.ctrlPoints:
             pointOriginList.append(point.center.getPosition(self.frameRange[0]))
-        for frame in range(self.frameRange[0],self.frameRange[1]+1):
+        for frame in range(self.frameRange[0],self.frameRange[1]):
             matrix=self.getAffineTransformMatrix(frame)
             idx=0
             for point in self.ctrlPoints:
@@ -958,9 +1027,220 @@ class CornerPinRoto(shapeFromRotopaint):
 
 
 
+class RandCornerPinRoto(shapeFromRotopaint):
+    """the 4 points animation from a cornerpin node and apply it to a roto node"""
+    def __init__(self, cornerPinNode, rotoNode, frameRange=None):
+        super().__init__(rotoNode)
+        self.cornerPinNode=cornerPinNode
+        self.rotoNode=rotoNode
+        self.frameRange=frameRange
+        self.applyRandomTransform()
+
+    # def applyRandomTransform(self):
+    #     for frame in range(self.frameRange[0],self.frameRange[1]):
+    #         matrix, invMatrix=self.random_affine_transform()
+    #         nukeMatrix=self.convert_to_nuke_matrix(matrix)
+    #         #make sure cornerPin node extra matrix is animated
+    #         self.cornerPinNode["transform_matrix"].setAnimated()
+    #         for i in range(16):
+    #             self.cornerPinNode["transform_matrix"].setValueAt(nukeMatrix[i], frame, i)
+    #         self.transformRoto(invMatrix,frame)
+    #
+    #     self.rotoNode["curves"].rootLayer.append(self.shape)
+
+    def random_affine_transform(self):
+        # Generate a random translation (tx, ty) between -10 and 10
+        tx, ty = np.random.uniform(-50, 50, 2)
+
+        # Generate a random rotation in radians
+        theta =np.random.uniform(-np.pi / 90, np.pi / 90)
+
+        # Generate a random scale factor
+        scale = np.random.uniform(1, 1.1)
+
+        # Generate a random shear factor
+        shear = np.random.uniform(-1,1)
+
+        # Create the 2D affine transformation matrix
+        transform_matrix = np.array([
+            [scale * np.cos(theta) - shear * np.sin(theta), -np.sin(theta), tx],
+            [np.sin(theta), scale * np.cos(theta) + shear * np.sin(theta), ty],
+            [0, 0, 1]
+        ])
+
+        # Calculate inverse scale
+        #inverse_scale = 1 / scale
+        # invert tx and ty
+        # tx = -tx
+        # ty = -ty
+        #
+        # # Create the inverse transformation matrix for roto points
+        # inverse_transform_matrix = np.array([
+        #     [inverse_scale * np.cos(theta) + shear * np.sin(theta), np.sin(theta), -tx],
+        #     [-np.sin(theta), inverse_scale * np.cos(theta) - shear * np.sin(theta), -ty],
+        #     [0, 0, 1]
+        # ]).T
+        inverse_transform_matrix = transform_matrix.T
+
+        return transform_matrix, inverse_transform_matrix
+
+    def convert_to_nuke_matrix(self,matrix_3x3):
+        # Start with a 4x4 identity matrix
+        matrix_4x4 = np.identity(4)
+
+        # Copy over the 3x3 transform to the top-left of the 4x4 matrix
+        matrix_4x4[:3, :3] = matrix_3x3[:3, :3]
+
+        # Transpose to switch from row-major to column-major
+        matrix_4x4 = matrix_4x4.T
+
+        # Flatten to 1D array
+        matrix_4x4 = matrix_4x4.flatten()
+
+        return matrix_4x4
+
+    def transformPoint(self,point,matrix):
+        """transform a point with a matrix"""
+        point=np.array([point[0],point[1],1])
+        point=np.dot(matrix,point)
+        return [point[0],point[1]]
+
+    def applyRandomTransform(self):
+        # Capture all point positions at each frame before transforming them
+        self.getCtrlPoints()
+        point_positions = {}
+        # make sure cornerPin node extra matrix is animated
+        #clear all keyframes in corner pin
+        # for curve in self.cornerPinNode["transform_matrix"].animations():
+        #     curve.clear()
+        self.cornerPinNode["transform_matrix"].clearAnimated()
+        #self.cornerPinNode["transform_matrix"].setDefaultValue()
+        self.cornerPinNode["transform_matrix"].setAnimated()
+        #set keyframes at existing value before first frame
+        #set all values to identity matrix at first frame
+        for i in range(16):
+            self.cornerPinNode["transform_matrix"].setValueAt(1 if i%5==0 else 0, self.frameRange[0]-1, i)
+
+        for frame in range(self.frameRange[0], self.frameRange[1]):
+            point_positions[frame] = [point.center.getPosition(frame) for point in self.ctrlPoints]
+
+        # Now apply transformations
+        for frame in range(self.frameRange[0],self.frameRange[1]):
+            matrix, invMatrix=self.random_affine_transform()
+            nukeMatrix=self.convert_to_nuke_matrix(matrix)
+
+            for i in range(16):
+                self.cornerPinNode["transform_matrix"].setValueAt(nukeMatrix[i], frame, i)
+            self.transformRoto(invMatrix,frame,point_positions[frame])
+        #set all values to identity matrix at last frame +1
+        for i in range(16):
+            self.cornerPinNode["transform_matrix"].setValueAt(1 if i%5==0 else 0, self.frameRange[1]+1, i)
+        self.rotoNode["curves"].rootLayer.append(self.shape)
+
+
+
+    def transformRoto(self, matrix, frame, pointOriginList):
+        #print(f"frame {frame} transform roto")
+        for idx, point in enumerate(self.ctrlPoints):
+            transformed_point = self.transformPoint(pointOriginList[idx], matrix)
+            #print(f"point {idx} {transformed_point}")
+            point.center.addPositionKey(frame, transformed_point)
+            #print(f"point {idx} {point.center.getPosition(frame)}")
+
+    # def transformRoto(self,matrix,frame):
+    #     self.getCtrlPoints()
+    #
+    #
+    #
+    #     pointOriginList = []
+    #     for point in self.ctrlPoints:
+    #         pointOriginList.append(point.center.getPosition(frame))
+    #
+    #     idx=0
+    #     print(f"frame {frame}")
+    #     for point in self.ctrlPoints:
+    #         point.center.addPositionKey(frame, self.transformPoint(pointOriginList[idx], matrix))
+    #         idx+=1
+
+        # def transformRoto(self):
+        #     self.getCtrlPoints()
+        #     pointOriginList = []
+        #     for point in self.ctrlPoints:
+        #         pointOriginList.append(point.center.getPosition(self.frameRange[0]))
+        #     for frame in range(self.frameRange[0], self.frameRange[1] + 1):
+        #         matrix = self.getAffineTransformMatrix(frame)
+        #         idx = 0
+        #         for point in self.ctrlPoints:
+        #             point.center.addPositionKey(frame, self.transformPoint(pointOriginList[idx], matrix))
+        #             idx += 1
+        #     self.rotoNode["curves"].rootLayer.append(self.shape)
+
+
+
+
+
+
+
+
+def randOffsetShapeImage(rotoName, frameRange, transName):
+
+    roto = nuke.toNode(rotoName)
+    trans = nuke.toNode(transName)
+    trans["translate"].setAnimated()
+    trans["scale"].setAnimated()
+    #set to default values
+    trans["translate"].setValueAt(0, 1)
+    trans["scale"].setValueAt(0, 1)
+    #make trans["translate"] is animated
+
+
+    shape = shapeFromRotopaint(roto)
+    total_offset_x = 0
+    total_offset_y = 0
+    scale = 0
+    print("generating shape 2 keyframes")
+    for frame in range(frameRange[0],frameRange[1]):
+        shape.growPoints(frame, -scale)
+        shape.growPointsTangent(frame, -scale)
+        # Generate random x and y offsets
+        xmax = 15
+        x = random.randint(-xmax, xmax)
+        ymax = 5
+        y = random.randint(-ymax, ymax)
+        scaleMax = 0.1
+        scale = random.uniform(0, scaleMax)
+
+        # Check if the new x and y offsets will breach the limits
+        if total_offset_x + x > 50:
+            x = random.randint(-xmax, 0)
+        elif total_offset_x + x < -50:
+            x = random.randint(0, xmax)
+
+        if total_offset_y + y > 30:
+            y = random.randint(-ymax, 0)
+        elif total_offset_y + y < -30:
+            y = random.randint(0, ymax)
+
+        # Update total offsets
+        total_offset_x += x
+        total_offset_y += y
+
+        shape.translatePoints(frame, x, y)
+        shape.growPoints(frame, scale)
+        shape.growPointsTangent(frame, scale)
+
+        transx = trans["translate"].valueAt(frame, 0)
+        transy = trans["translate"].valueAt(frame, 1)
+        #scaleXY = trans["scale"].valueAt(frame, 0)
+
+        trans["translate"].setValueAt(x + transx, frame, 0)
+        trans["translate"].setValueAt(y + transy, frame, 1)
+        trans["scale"].setValueAt(1 + scale, frame, 0)
+    roto['curves'].rootLayer.append(shape.shape)
 
 
 if __name__ == '__main__':
+    print(nuke.memory("max_usage") / (1024 * 1024))
     #load nuke script
     #nuke.scriptOpen("D:/pyG/data/DatasetGen.nk")
     #nuke.scriptNew("D:/pyG/data/point_split_test.nk")
@@ -1056,7 +1336,7 @@ if __name__ == '__main__':
     # nuke.scriptSave(scriptname)
     # nuke.scriptClose()
 
-    nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+    nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_v03.nk")
     #grade=nuke.toNode("Grade1")
     #roto=nuke.toNode("Roto1")
     #blur = createBlurNode(roto)
@@ -1099,55 +1379,8 @@ if __name__ == '__main__':
     #     trans["translate"].setValueAt(y + transy, frame, 1)
     #     trans["scale"].setValueAt(scaleXY+scale, frame, 0)
     #
-    # Frange=10000
-    # nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
-    # # grade=nuke.toNode("Grade1")
-    # roto = nuke.toNode("Roto4")
-    # # blur = createBlurNode(roto)
-    # grade = nuke.toNode("Grade2")
-    # trans = nuke.toNode("Transform3")
-    #shape2 = shapeFromRotopaint(roto)
-    # total_offset_x = 0
-    # total_offset_y = 0
-    # print("generating shape 2 keyframes")
-    # for frame in range(1, Frange):
-    #     # Generate random x and y offsets
-    #     x = random.randint(-20, 20)
-    #     y = random.randint(-10, 10)
-    #     scale=random.uniform(-0.005,0.005)
-    #
-    #     # Check if the new x and y offsets will breach the limits
-    #     if total_offset_x + x > 150:
-    #         x = random.randint(-20, 0)
-    #     elif total_offset_x + x < -150:
-    #         x = random.randint(0, 10)
-    #
-    #     if total_offset_y + y > 100:
-    #         y = random.randint(-10, 0)
-    #     elif total_offset_y + y < -100:
-    #         y = random.randint(0, 10)
-    #
-    #     # Update total offsets
-    #     total_offset_x += x
-    #     total_offset_y += y
-    #
-    #     shape2.translatePoints(frame, x, y)
-    #     shape2.growPoints(frame,scale)
-    #     shape2.growPointsTangent(frame, scale)
-    #
-    #     transx = trans["translate"].valueAt(frame, 0)
-    #     transy = trans["translate"].valueAt(frame, 1)
-    #     scaleXY= trans["scale"].valueAt(frame, 0)
-    #
-    #     trans["translate"].setValueAt(x + transx, frame, 0)
-    #     trans["translate"].setValueAt(y + transy, frame, 1)
-    #     trans["scale"].setValueAt(scaleXY+scale, frame, 0)
 
 
-
-
-
-    #roto['curves'].rootLayer.append(shape2.shape)
     # # #shape.loopKeyFrames(1,172,10)
     # switchNode=nuke.toNode("Switch1")
     # dataGenenerator=Datagen(shapes=[shape,shape2],switch_frames=[5000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,10000])
@@ -1160,14 +1393,86 @@ if __name__ == '__main__':
     # print("script saved")
     # #dataGenenerator.render()
 
+    nuke.Undo().disable()
 
-    # test cornerPointoRoto
-    cp=nuke.toNode("CornerPin2D4")
-    roto=nuke.toNode("Roto5")
-    cp2roto=CornerPinRoto(cp,roto,frameRange=[0,172])
-    cp2roto.transformRoto()
+    rotoList=["Roto1","Roto4","Roto10","Roto11","Roto6","Roto12","Roto16","Roto17","Roto18"]
+    transList=["CornerPin2D7","CornerPin2D8","CornerPin2D9","CornerPin2D10","CornerPin2D11","CornerPin2D12","CornerPin2D16","CornerPin2D17","CornerPin2D18"]
+    cpList=["CornerPin2D1","CornerPin2D3","CornerPin2D6","CornerPin2D5","CornerPin2D2","CornerPin2D4","CornerPin2D13","CornerPin2D14","CornerPin2D15"]
+    frameRanges=[[1, 173], [0, 773], [981, 1145], [3691, 3999], [6346, 6728], [6919, 7376], [3573, 4012], [4539, 4686], [4496, 4540]]
+    frameRangesOffset=[[0, 1300],[1300,2600],[2600,3900],[3900,5200],[5200,6500],[6500,7800],[7800,9100],[9100,10400],[10400,12000]]
 
-    nuke.scriptSave("D:/DeepParametricShapes/nukeScripts/Cadis_example_01.nk")
+    # rotoList=[rotoList[-1]]
+    # transList=[transList[-1]]
+    # frameRanges=[frameRanges[-1]]
+    # cpList=[cpList[-1]]
+    # frameRangesOffset=[frameRangesOffset[-1]]
+    # rotoList = rotoList[6:]
+    # transList = transList[6:]
+    # frameRanges = frameRanges[6:]
+    # cpList = cpList[6:]
+    # frameRangesOffset = frameRangesOffset[6:]
+    # # enumerate through zipped rotoList,cpList and frameRanges
+    # for i,(roto,cp,frameRange) in enumerate(zip(rotoList,cpList,frameRanges)):
+    #     #convertTracking Data to Roto.
+    #     cp=nuke.toNode(cp)
+    #     roto=nuke.toNode(roto)
+    #     print(f"applying tracking data to {roto.name()}")
+    #     cp2roto=CornerPinRoto(cp,roto,frameRange=frameRange)
+    #     cp2roto.transformRoto()
+    #
+    #     #loop keyframes
+    #     print(f"looping keyframes {roto.name()}")
+    #     shape=shapeFromRotopaint(roto)
+    #     shape.loopKeyFrames(frameRange[0],frameRange[1],65)
+    #
+    # for i, (roto, frameRange, trans) in enumerate(zip(rotoList, frameRangesOffset, transList)):
+    #     cp = nuke.toNode(trans)
+    #     roto = nuke.toNode(roto)
+    #     print(f"applying random offset to {roto.name()}")
+    #     Randcp2roto = RandCornerPinRoto(cp, roto, frameRange=frameRange)
+
+
+    # #convertTracking Data to Roto.
+    # cp=nuke.toNode("CornerPin2D6")
+    # roto=nuke.toNode("Roto10")
+    # cp2roto=CornerPinRoto(cp,roto,frameRange=[981,1144])
+    # cp2roto.transformRoto()
+    #
+    # #loop keyframes
+    # print(f"looping keyframes roto10")
+    # shape=shapeFromRotopaint(nuke.toNode("Roto10"))
+    # shape.loopKeyFrames(981,1144,48)
+    #convertTracking Data to Roto.
+    # cp=nuke.toNode("CornerPin2D5")
+    # roto=nuke.toNode("Roto11")
+    # cp2roto=CornerPinRoto(cp,roto,frameRange=[3691,3998])
+    # cp2roto.transformRoto()
+
+    # #loop keyframes
+    # print("looping keyframes roto11")
+    # shape=shapeFromRotopaint(nuke.toNode("Roto11"))
+    # shape.loopKeyFrames(3691,3998,24)
+
+    #create shapes from roto list
+
+
+
+    #
+    switchNode=nuke.toNode("Switch1")
+    # # #clear animation from switch node which
+    switchNode["which"].clearAnimated()
+    switchNode["which"].setValueAt(0,0)
+    switchNode["which"].setAnimated()
+    #
+    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoList]
+    dataGenenerator=Datagen(shapes=shapes,switch_frames=[1300,2600,3900,5200,6500,7800,9100,10400],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,12000])
+    # # # dataGenenerator.frameRange=[0,172]
+    # #dataGenenerator.createPointsDict()
+    # # # dataGenenerator.printPointsDict()
+    dataGenenerator.savePointsDict("transform_test")
+    # # # #dataGenenerator.attachWriteNode()
+    nuke.scriptSave("D:/DeepParametricShapes/nukeScripts/Cadis_example_v03.nk")
+    #dataGenenerator.render()
 
     nuke.scriptClose()
 
