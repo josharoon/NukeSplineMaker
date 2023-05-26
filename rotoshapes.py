@@ -427,8 +427,8 @@ class shapeFromRotopaint(nShapeMaster):
         control_points/=control_points.max()
         return list(control_points)
 
-    def subdivideCurves(self, curves):
-        while len(curves) < 15:
+    def subdivideCurves(self, curves, nCurves=15):
+        while len(curves) < nCurves:
             # subdivide the curves till we have 15
             # get longest curve
             max_length = 0
@@ -1036,19 +1036,9 @@ class RandCornerPinRoto(shapeFromRotopaint):
         self.frameRange=frameRange
         self.applyRandomTransform()
 
-    # def applyRandomTransform(self):
-    #     for frame in range(self.frameRange[0],self.frameRange[1]):
-    #         matrix, invMatrix=self.random_affine_transform()
-    #         nukeMatrix=self.convert_to_nuke_matrix(matrix)
-    #         #make sure cornerPin node extra matrix is animated
-    #         self.cornerPinNode["transform_matrix"].setAnimated()
-    #         for i in range(16):
-    #             self.cornerPinNode["transform_matrix"].setValueAt(nukeMatrix[i], frame, i)
-    #         self.transformRoto(invMatrix,frame)
-    #
-    #     self.rotoNode["curves"].rootLayer.append(self.shape)
-
-    def random_affine_transform(self):
+    def random_affine_transform(self, frame):
+        # Set the seed for the random number generator
+        np.random.seed(frame)
         # Generate a random translation (tx, ty) between -10 and 10
         tx, ty = np.random.uniform(-50, 50, 2)
 
@@ -1068,18 +1058,6 @@ class RandCornerPinRoto(shapeFromRotopaint):
             [0, 0, 1]
         ])
 
-        # Calculate inverse scale
-        #inverse_scale = 1 / scale
-        # invert tx and ty
-        # tx = -tx
-        # ty = -ty
-        #
-        # # Create the inverse transformation matrix for roto points
-        # inverse_transform_matrix = np.array([
-        #     [inverse_scale * np.cos(theta) + shear * np.sin(theta), np.sin(theta), -tx],
-        #     [-np.sin(theta), inverse_scale * np.cos(theta) - shear * np.sin(theta), -ty],
-        #     [0, 0, 1]
-        # ]).T
         inverse_transform_matrix = transform_matrix.T
 
         return transform_matrix, inverse_transform_matrix
@@ -1113,6 +1091,7 @@ class RandCornerPinRoto(shapeFromRotopaint):
         #clear all keyframes in corner pin
         # for curve in self.cornerPinNode["transform_matrix"].animations():
         #     curve.clear()
+        print(f"clearing animation and setting keyframes on node: {self.cornerPinNode.name()}")
         self.cornerPinNode["transform_matrix"].clearAnimated()
         #self.cornerPinNode["transform_matrix"].setDefaultValue()
         self.cornerPinNode["transform_matrix"].setAnimated()
@@ -1126,7 +1105,7 @@ class RandCornerPinRoto(shapeFromRotopaint):
 
         # Now apply transformations
         for frame in range(self.frameRange[0],self.frameRange[1]):
-            matrix, invMatrix=self.random_affine_transform()
+            matrix, invMatrix=self.random_affine_transform(frame)
             nukeMatrix=self.convert_to_nuke_matrix(matrix)
 
             for i in range(16):
@@ -1147,33 +1126,6 @@ class RandCornerPinRoto(shapeFromRotopaint):
             point.center.addPositionKey(frame, transformed_point)
             #print(f"point {idx} {point.center.getPosition(frame)}")
 
-    # def transformRoto(self,matrix,frame):
-    #     self.getCtrlPoints()
-    #
-    #
-    #
-    #     pointOriginList = []
-    #     for point in self.ctrlPoints:
-    #         pointOriginList.append(point.center.getPosition(frame))
-    #
-    #     idx=0
-    #     print(f"frame {frame}")
-    #     for point in self.ctrlPoints:
-    #         point.center.addPositionKey(frame, self.transformPoint(pointOriginList[idx], matrix))
-    #         idx+=1
-
-        # def transformRoto(self):
-        #     self.getCtrlPoints()
-        #     pointOriginList = []
-        #     for point in self.ctrlPoints:
-        #         pointOriginList.append(point.center.getPosition(self.frameRange[0]))
-        #     for frame in range(self.frameRange[0], self.frameRange[1] + 1):
-        #         matrix = self.getAffineTransformMatrix(frame)
-        #         idx = 0
-        #         for point in self.ctrlPoints:
-        #             point.center.addPositionKey(frame, self.transformPoint(pointOriginList[idx], matrix))
-        #             idx += 1
-        #     self.rotoNode["curves"].rootLayer.append(self.shape)
 
 
 
@@ -1336,7 +1288,8 @@ if __name__ == '__main__':
     # nuke.scriptSave(scriptname)
     # nuke.scriptClose()
 
-    nuke.scriptOpen("D:/DeepParametricShapes/nukeScripts/Cadis_example_v03.nk")
+    nkScript = "D:/DeepParametricShapes/nukeScripts/Cadis_example_v10.nk"
+    nuke.scriptOpen(nkScript)
     #grade=nuke.toNode("Grade1")
     #roto=nuke.toNode("Roto1")
     #blur = createBlurNode(roto)
@@ -1395,37 +1348,43 @@ if __name__ == '__main__':
 
     nuke.Undo().disable()
 
-    rotoList=["Roto1","Roto4","Roto10","Roto11","Roto6","Roto12","Roto16","Roto17","Roto18"]
-    transList=["CornerPin2D7","CornerPin2D8","CornerPin2D9","CornerPin2D10","CornerPin2D11","CornerPin2D12","CornerPin2D16","CornerPin2D17","CornerPin2D18"]
-    cpList=["CornerPin2D1","CornerPin2D3","CornerPin2D6","CornerPin2D5","CornerPin2D2","CornerPin2D4","CornerPin2D13","CornerPin2D14","CornerPin2D15"]
-    frameRanges=[[1, 173], [0, 773], [981, 1145], [3691, 3999], [6346, 6728], [6919, 7376], [3573, 4012], [4539, 4686], [4496, 4540]]
-    frameRangesOffset=[[0, 1300],[1300,2600],[2600,3900],[3900,5200],[5200,6500],[6500,7800],[7800,9100],[9100,10400],[10400,12000]]
-
-    # rotoList=[rotoList[-1]]
+    rotoListI=["ri1", "ri2", "ri3", "ri4", "ri5", "ri6", "ri7", "ri8"]
+    rotoListP=["rp1", "rp2", "rp3", "rp4", "rp5", "rp6", "rp7", "rp8"]
+    transList=["tcp1", "tcp2", "tcp3", "tcp4", "tcp5", "tcp6", "tcp7", "tcp8"]
+    cpList=["cpp1","cpp2","cpp3","cpp4","cpp5","cpp6","cpp7","cpp8"]
+    frameRanges=[[1,172],[0, 773], [981, 1145], [3691, 3999], [6346, 6728], [6919, 7376], [3573, 4012], [4539, 4686], [4496, 4540]]
+    frameRangesOffset=[[0, 2000], [2000, 4000], [4000, 6000], [6000, 8000], [8000, 10000], [10000, 12000], [12000, 14000], [14000, 16000]]
+    #rotoList=["ri4"]
     # transList=[transList[-1]]
     # frameRanges=[frameRanges[-1]]
-    # cpList=[cpList[-1]]
+
     # frameRangesOffset=[frameRangesOffset[-1]]
     # rotoList = rotoList[6:]
     # transList = transList[6:]
-    # frameRanges = frameRanges[6:]
+    frameRanges = frameRanges[1:]
     # cpList = cpList[6:]
     # frameRangesOffset = frameRangesOffset[6:]
     # # enumerate through zipped rotoList,cpList and frameRanges
-    # for i,(roto,cp,frameRange) in enumerate(zip(rotoList,cpList,frameRanges)):
-    #     #convertTracking Data to Roto.
-    #     cp=nuke.toNode(cp)
-    #     roto=nuke.toNode(roto)
-    #     print(f"applying tracking data to {roto.name()}")
-    #     cp2roto=CornerPinRoto(cp,roto,frameRange=frameRange)
-    #     cp2roto.transformRoto()
+    # for i,(roto,cp,frameRange) in enumerate(zip(rotoListI+rotoListP, cpList+cpList, frameRanges+frameRanges)):
+    # #     #convertTracking Data to Roto.
+    #       cp=nuke.toNode(cp)
+    #       roto=nuke.toNode(roto)
+    # #     #print(f"applying tracking data to {roto.name()}")
+    # #     # cp2roto=CornerPinRoto(cp,roto,frameRange=frameRange)
+    # #     # cp2roto.transformRoto()
+    # #
+    #       #loop keyframes
+    #       print(f"looping keyframes {roto.name()}")
+    #       shape=shapeFromRotopaint(roto)
+    #       shape.loopKeyFrames(frameRange[0],frameRange[1],200)
+    # #
+    # for i, (roto, frameRange, trans) in enumerate(zip(rotoListI, frameRangesOffset, transList)):
+    #     cp = nuke.toNode(trans)
+    #     roto = nuke.toNode(roto)
+    #     print(f"applying random offset to {roto.name()}")
+    #     Randcp2roto = RandCornerPinRoto(cp, roto, frameRange=frameRange)
     #
-    #     #loop keyframes
-    #     print(f"looping keyframes {roto.name()}")
-    #     shape=shapeFromRotopaint(roto)
-    #     shape.loopKeyFrames(frameRange[0],frameRange[1],65)
-    #
-    # for i, (roto, frameRange, trans) in enumerate(zip(rotoList, frameRangesOffset, transList)):
+    # for i, (roto, frameRange, trans) in enumerate(zip(rotoListP, frameRangesOffset, transList)):
     #     cp = nuke.toNode(trans)
     #     roto = nuke.toNode(roto)
     #     print(f"applying random offset to {roto.name()}")
@@ -1459,19 +1418,19 @@ if __name__ == '__main__':
 
     #
     switchNode=nuke.toNode("Switch1")
-    # # #clear animation from switch node which
-    switchNode["which"].clearAnimated()
-    switchNode["which"].setValueAt(0,0)
-    switchNode["which"].setAnimated()
-    #
-    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoList]
-    dataGenenerator=Datagen(shapes=shapes,switch_frames=[1300,2600,3900,5200,6500,7800,9100,10400],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,12000])
-    # # # dataGenenerator.frameRange=[0,172]
-    # #dataGenenerator.createPointsDict()
-    # # # dataGenenerator.printPointsDict()
-    dataGenenerator.savePointsDict("transform_test")
-    # # # #dataGenenerator.attachWriteNode()
-    nuke.scriptSave("D:/DeepParametricShapes/nukeScripts/Cadis_example_v03.nk")
+    # # # # #clear animation from switch node which
+    # switchNode["which"].clearAnimated()
+    # switchNode["which"].setAnimated()
+    # switchNode["which"].setValueAt(0,0)
+    # #
+    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoListP]
+    dataGenenerator=Datagen(shapes=shapes,switch_frames=[2000,4000,6000,8000,10000,12000,14000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,16000])
+    # # # # dataGenenerator.frameRange=[0,172]
+    # # #dataGenenerator.createPointsDict()
+    # # # # dataGenenerator.printPointsDict()
+    dataGenenerator.savePointsDict("transform_test_pupil")
+    # # # # #dataGenenerator.attachWriteNode()
+    nuke.scriptSave(nkScript)
     #dataGenenerator.render()
 
     nuke.scriptClose()
