@@ -95,8 +95,8 @@ def prepRotoTemplate(rotoNode, nCurves=15):
 
 nukescript=r"D:/DeepParametricShapes/nukeScripts/templates.nk"
 nuke.scriptOpen(nukescript)
-rotonode=nuke.toNode("pupil1")
-rotonode2=nuke.toNode("Instrument1")
+rotonode=nuke.toNode("pupil2")
+rotonode2=nuke.toNode("Instrument2")
 tensor=prepRotoTemplate(rotonode,nCurves=4)
 tensor2=prepRotoTemplate(rotonode2,nCurves=15)
 tensor=torch.cat([tensor2,tensor],dim=1)

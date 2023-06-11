@@ -1192,101 +1192,6 @@ def randOffsetShapeImage(rotoName, frameRange, transName):
 
 
 if __name__ == '__main__':
-    print(nuke.memory("max_usage") / (1024 * 1024))
-    #load nuke script
-    #nuke.scriptOpen("D:/pyG/data/DatasetGen.nk")
-    #nuke.scriptNew("D:/pyG/data/point_split_test.nk")
-    # roto = createRotoNode()
-    # shape=nShapeCreator(5, roto)
-    # shape.printPoints(0)
-    # shape.randomisePoints(100,15,15)
-    # shape.growPointsTangent(100,10)
-    # shape.printPoints(100)
-    # shape.randomisePoints(150, 15, 15)
-    # shape.randomisePointsTangent(25,5,5)
-    # shape.randomisePointsTangent(200,5,4)
-    # shape.growPoints(110,0.4)
-    # shape.printPoints(200)
-    # shape.growPoints(135, -0.3)
-    # shape.translatePoints(200, 15,15)
-    # shape.translatePoints(400, -30,-20)
-    # shape.growPoints(600, 0.5)
-    # shape.growPoints(700, -0.5)
-    # shape.randomisePoints(900, 30, 30)
-    # shape.randomisePoints(1800, 5, 5)
-    # shape.growPointsTangent(2000, 2)
-    # shape.growPoints(8000, 0.5)
-    # shape.randomisePoints(3000, 15, 15)
-    # shape.randomisePoints(4000, 15, 15)
-    # shape.randomisePoints(5000, 15, 15)
-    # shape.randomisePoints(6000, 15, 15)
-    # shape.resetPointsTangent(6100)
-    # shape.translatePoints(7000, -15, 15)
-    # shape.randomisePoints(7100, 15, 15)
-    # shape.randomisePoints(8000, 15, 15)
-    # shape.randomisePoints(9000, 15, 15)
-    # shape.randomisePoints(10000, 15, 15)
-
-
-
-
-
-    #nuke.scriptSave("D:/pyG/data/point_split_test.nk")
-
-
-    # daymonthtime = datetime.now().strftime("%d%m%y_%H%M%S")
-    # scriptname = "D:/pyG/data/DatasetGen{}.nk".format(daymonthtime)
-    # nuke.scriptNew(scriptname)
-    # #set full size format of nuke script to be 224x224
-    # p2sFormat='224 224 p2s'
-    # nuke.addFormat(p2sFormat)
-    # nuke.root()["format"].setValue("p2s")
-    # nuke.scriptNew(scriptname)
-    # roto = createRotoNode()
-    # blur=createBlurNode(roto)
-    # grade=createGradeNode(blur)
-    # shape=nShapeCreator(5, roto)
-    # shape.randomisePoints(100,15,15)
-    # shape.growPointsTangent(100,10)
-    # shape.printPoints(100)
-    # shape.randomisePoints(150, 15, 15)
-    # shape.randomisePointsTangent(25,5,5)
-    # shape.randomisePointsTangent(200,5,4)
-    # shape.growPoints(110,0.4)
-    # shape.printPoints(200)
-    # shape.growPoints(135, -0.3)
-    # shape.translatePoints(200, 15,15)
-    # shape.translatePoints(400, -30,-20)
-    # shape.growPoints(600, 0.5)
-    # shape.growPoints(700, -0.5)
-    # shape.resetPointsTangent(750)
-    # shape.randomisePoints(900, 30, 30)
-    # shape.randomisePoints(1800, 5, 5)
-    # shape.growPointsTangent(2000, 5)
-    # shape.growPoints(8000, 0.5)
-    # shape.randomisePoints(3000, 15, 15)
-    # shape.randomisePoints(4000, 15, 15)
-    # shape.randomisePoints(5000, 15, 15)
-    # shape.resetPointsTangent(5100)
-    # shape.randomisePoints(6000, 15, 15)
-    # shape.growPointsTangent(6100, 0.5)
-    # shape.translatePoints(7000, -15, 15)
-    # shape.randomisePoints(7000, 15, 15)
-    # shape.growPointsTangent(7100, 2)
-    # shape.randomisePoints(8000, 15, 15)
-    # shape.randomisePoints(9000, 15, 15)
-    # shape.growPointsTangent(9100, 10)
-    # shape.randomisePoints(10000, 15, 15)
-    # dataGenenerator=Datagen(shape,grade,daymonthtime)
-    # dataGenenerator.frameRange=[1,10000]
-    # dataGenenerator.createPointsDict()
-    # dataGenenerator.printPointsDict()
-    # dataGenenerator.savePointsDict(daymonthtime)
-    # # # #
-    # # # # #render write Node
-    # dataGenenerator.render()
-    # nuke.scriptSave(scriptname)
-    # nuke.scriptClose()
 
     nkScript = "D:/DeepParametricShapes/nukeScripts/Cadis_example_v10.nk"
     nuke.scriptOpen(nkScript)
@@ -1423,12 +1328,12 @@ if __name__ == '__main__':
     # switchNode["which"].setAnimated()
     # switchNode["which"].setValueAt(0,0)
     # #
-    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoListP]
+    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoListI]
     dataGenenerator=Datagen(shapes=shapes,switch_frames=[2000,4000,6000,8000,10000,12000,14000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,16000])
     # # # # dataGenenerator.frameRange=[0,172]
     # # #dataGenenerator.createPointsDict()
     # # # # dataGenenerator.printPointsDict()
-    dataGenenerator.savePointsDict("transform_test_pupil")
+    dataGenenerator.savePointsDict("transform_test_instrument")
     # # # # #dataGenenerator.attachWriteNode()
     nuke.scriptSave(nkScript)
     #dataGenenerator.render()
