@@ -1,3 +1,7 @@
+"""This file provodes functionalilty for creating and extracting data from Nuke and requrires a Nuke License to run
+it is key to the creation of the datasets and importing predictions back into Nuke. The data created using this code
+is supplied as part of the submission incase of lack of access to a Nuke License."""
+
 import fnmatch
 import json
 import math
@@ -6,11 +10,11 @@ import pickle
 import random
 from copy import copy, deepcopy
 import bezier
-
+import torch
+from typing import List
 import cv2
-
-#import cv2
-print(os.environ['PATH'])
+from Lib import glob
+import viz
 import nuke
 import nuke.rotopaint as rp
 import numpy as np
@@ -472,6 +476,88 @@ class shapeFromRotopaint(nShapeMaster):
 
 
 
+
+
+class dpsLoader(nShapeMaster):
+    def __init__(self, outputDir, gtLabels=None):
+        super().__init__()
+        self.outputDir = outputDir
+        self.ptFiles = glob.glob(f'{outputDir}/*.pt')
+        self.gtLabels = gtLabels
+        self.pts = None
+        self.loadPts()
+        self.createShape()
+        # Add other initialization code here
+
+    def loadPts(self):
+        """Load .pt files into a list of NumPy arrays"""
+        pts = []
+        for pt_file in self.ptFiles:
+            pt = torch.load(pt_file)
+            # viz.plotQuadraticSpline(pt.unsqueeze(0), title=pt_file)
+            # Convert points from tensors to quadratic bezier curves
+            curves = self.makeCubicSpline(pt)
+            #subtract yaxis from 1
+            # viz.plotCubicSpline(torch.tensor(curves), title="cubic")
+            curves[:, :, 1] = 1 - curves[:, :, 1]
+            curves*=224
+            # viz.plotCubicSpline(torch.tensor(curves), title="cubic expanded")
+
+
+            pts.append(curves)
+
+        self.pts=pts
+
+    def makeCubicSpline(self, points: np.ndarray) -> np.ndarray:
+        """Convert points to quadratic bezier curves using the bezier curve library"""
+        curves = np.zeros((points.shape[0], 4, 2))
+        for i in range(points.shape[0]):
+            curve = bezier.Curve.from_nodes(points[i].T,2)
+            curves[i] = curve.elevate().nodes.T
+
+        return curves
+
+    def createShape(self):
+        """Create a shape from a rotopaint node"""
+        self.rotoNode = nuke.createNode('Roto')
+        self.shape = rp.Shape(self.rotoNode['curves'])
+
+        num_curves = len(self.pts[0])
+        spline = []
+        #set control points on the first frame.
+        for i in range(num_curves):
+            self.shape.append(rp.ShapeControlPoint())
+
+        for  frame in range(0,len(self.pts)):
+           for i in range(num_curves):
+               curve = self.pts[frame][i]
+               next_curve = self.pts[frame][(i + 1) % num_curves]  # Wrap around to the first curve
+               # Create a new spline in the shape
+               spline = []
+               # Set the points of the spline
+               points = curve.reshape(-1, 2)  # Reshape the curve array to have (nPoints, 2) shape
+               # Extract the control point values
+               p0 = points[0]  # First control point
+               p1 = points[1] - p0  # Second control point (right tangent of the first control point)
+               # Set the end control point as the first control point of the next curve
+               p3 = next_curve[0]
+               p2 = points[2] - p3  # Third control point (left tangent of the end control point)
+               self.shape[i].center.addPositionKey(frame, (p0[0], p0[1]))
+               self.shape[i].rightTangent.addPositionKey(frame, (p1[0], p1[1]))
+               self.shape[i].featherRightTangent.addPositionKey(frame, (p1[0], p1[1]))
+               self.shape[(i+1) % num_curves].leftTangent.addPositionKey(frame, (p2[0], p2[1]))
+               self.shape[(i+1) % num_curves].featherLeftTangent.addPositionKey(frame, (p2[0], p2[1]))
+               self.shape[(i+1) % num_curves].center.addPositionKey(frame, (p3[0], p3[1]))
+
+
+
+
+
+
+
+
+
+
 class shapeLoader(nShapeMaster):
     """load shapes from pickle file into a roto node"""
     def __init__(self, outputDir,gtLabels=None):
@@ -585,7 +671,6 @@ class shapeLoader(nShapeMaster):
             name, shape = pickle.load(f)
         self.npShape = shape
         self.imagePath = name
-        #print ("loaded shape {} from {}".format(name,path))
     def npShape2points(self):
         """convert a numpy shape to a list of points"""
         self.points=[]
@@ -1193,8 +1278,8 @@ def randOffsetShapeImage(rotoName, frameRange, transName):
 
 if __name__ == '__main__':
 
-    nkScript = "D:/DeepParametricShapes/nukeScripts/Cadis_example_v10.nk"
-    nuke.scriptOpen(nkScript)
+    # nkScript = "D:/DeepParametricShapes/nukeScripts/Cadis_example_v10.nk"
+    # nuke.scriptOpen(nkScript)
     #grade=nuke.toNode("Grade1")
     #roto=nuke.toNode("Roto1")
     #blur = createBlurNode(roto)
@@ -1251,14 +1336,14 @@ if __name__ == '__main__':
     # print("script saved")
     # #dataGenenerator.render()
 
-    nuke.Undo().disable()
-
-    rotoListI=["ri1", "ri2", "ri3", "ri4", "ri5", "ri6", "ri7", "ri8"]
-    rotoListP=["rp1", "rp2", "rp3", "rp4", "rp5", "rp6", "rp7", "rp8"]
-    transList=["tcp1", "tcp2", "tcp3", "tcp4", "tcp5", "tcp6", "tcp7", "tcp8"]
-    cpList=["cpp1","cpp2","cpp3","cpp4","cpp5","cpp6","cpp7","cpp8"]
-    frameRanges=[[1,172],[0, 773], [981, 1145], [3691, 3999], [6346, 6728], [6919, 7376], [3573, 4012], [4539, 4686], [4496, 4540]]
-    frameRangesOffset=[[0, 2000], [2000, 4000], [4000, 6000], [6000, 8000], [8000, 10000], [10000, 12000], [12000, 14000], [14000, 16000]]
+    # nuke.Undo().disable()
+    #
+    # rotoListI=["ri1", "ri2", "ri3", "ri4", "ri5", "ri6", "ri7", "ri8"]
+    # rotoListP=["rp1", "rp2", "rp3", "rp4", "rp5", "rp6", "rp7", "rp8"]
+    # transList=["tcp1", "tcp2", "tcp3", "tcp4", "tcp5", "tcp6", "tcp7", "tcp8"]
+    # cpList=["cpp1","cpp2","cpp3","cpp4","cpp5","cpp6","cpp7","cpp8"]
+    # frameRanges=[[1,172],[0, 773], [981, 1145], [3691, 3999], [6346, 6728], [6919, 7376], [3573, 4012], [4539, 4686], [4496, 4540]]
+    # frameRangesOffset=[[0, 2000], [2000, 4000], [4000, 6000], [6000, 8000], [8000, 10000], [10000, 12000], [12000, 14000], [14000, 16000]]
     #rotoList=["ri4"]
     # transList=[transList[-1]]
     # frameRanges=[frameRanges[-1]]
@@ -1266,7 +1351,7 @@ if __name__ == '__main__':
     # frameRangesOffset=[frameRangesOffset[-1]]
     # rotoList = rotoList[6:]
     # transList = transList[6:]
-    frameRanges = frameRanges[1:]
+    # frameRanges = frameRanges[1:]
     # cpList = cpList[6:]
     # frameRangesOffset = frameRangesOffset[6:]
     # # enumerate through zipped rotoList,cpList and frameRanges
@@ -1322,29 +1407,33 @@ if __name__ == '__main__':
 
 
     #
-    switchNode=nuke.toNode("Switch1")
+    # switchNode=nuke.toNode("Switch1")
     # # # # #clear animation from switch node which
     # switchNode["which"].clearAnimated()
     # switchNode["which"].setAnimated()
     # switchNode["which"].setValueAt(0,0)
     # #
-    shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoListI]
-    dataGenenerator=Datagen(shapes=shapes,switch_frames=[2000,4000,6000,8000,10000,12000,14000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,16000])
+    # shapes = [shapeFromRotopaint(nuke.toNode(roto)) for roto in rotoListI]
+    # dataGenenerator=Datagen(shapes=shapes,switch_frames=[2000,4000,6000,8000,10000,12000,14000],  lastNode=switchNode,switch=switchNode,timeID="transform_test",range=[1,16000])
     # # # # dataGenenerator.frameRange=[0,172]
     # # #dataGenenerator.createPointsDict()
     # # # # dataGenenerator.printPointsDict()
-    dataGenenerator.savePointsDict("transform_test_instrument")
+    # dataGenenerator.savePointsDict("transform_test_instrument")
     # # # # #dataGenenerator.attachWriteNode()
-    nuke.scriptSave(nkScript)
+    # nuke.scriptSave(nkScript)
     #dataGenenerator.render()
 
-    nuke.scriptClose()
+    nuke.scriptOpen(r"D:\ThesisData\nukeScripts\testOuts.nk")
 
 
+    # nuke.scriptClose()
+    # nuke.scriptNew(r"D:\ThesisData\nukeScripts\testOuts.nk")
+    DpsResults=dpsLoader(r"D:\ThesisData\demo\instrument1")
+    nuke.scriptSave(r"D:\ThesisData\nukeScripts\testOuts.nk")
 
     # #create new nuke script
     # nuke.scriptNew("D:/pyG/data/OutputLoader.nk")
-    # shapeLoader=shapeLoader(r"D:\pyG\temp\RES\04-12-14-45-10",gtLabels=r"D:\pyG\data\points\120423_183451\points120423_183451.json")
+    # shapeLoader=shapeLoader(r"D:\pyG\temp\RES\05-06_11-09-59\epoch_5\outputs",gtLabels=r"D:\pyG\data\points\120423_183451\points120423_183451.json")
     # #save nuke script
     # nuke.scriptSave("D:/pyG/data/OutputLoader.nk")
 

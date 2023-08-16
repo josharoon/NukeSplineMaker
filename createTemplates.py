@@ -1,4 +1,5 @@
-#import nuke
+"""This code requires a Nuke License.  It is used to create templates for training.  The templates are supplied as
+port of the submission and do not need to be recreated"""
 import numpy as np
 import torch
 import viz
@@ -7,7 +8,7 @@ import pyperclip
 from skimage.util import view_as_windows
 
 
-topology = [15, 4, 4]
+topology = [8, 4, 4]
 
 
 def bezier_to_polygonal(x):
@@ -96,10 +97,11 @@ def prepRotoTemplate(rotoNode, nCurves=15):
 nukescript=r"D:/DeepParametricShapes/nukeScripts/templates.nk"
 nuke.scriptOpen(nukescript)
 rotonode=nuke.toNode("pupil2")
-rotonode2=nuke.toNode("Instrument2")
-tensor=prepRotoTemplate(rotonode,nCurves=4)
+rotonode2=nuke.toNode("Instrument")
+# tensor=prepRotoTemplate(rotonode,nCurves=4)
 tensor2=prepRotoTemplate(rotonode2,nCurves=15)
-tensor=torch.cat([tensor2,tensor],dim=1)
+# tensor=torch.cat([tensor2,tensor],dim=1)
+tensor=tensor2
 nuke.scriptClose()
 
 

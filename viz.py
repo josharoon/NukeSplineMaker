@@ -1,9 +1,10 @@
+"""This file is to help with visualisation of the templates as they're created"""
+
 import bezier
 import numpy as np
 from matplotlib import pyplot as plt
-import torch
 
-#plot output to a tensoboard writer
+
 
 
 def plot_to_tensorboard(writer, epoch, output,name="output"):
